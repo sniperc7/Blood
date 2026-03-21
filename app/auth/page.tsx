@@ -10,6 +10,7 @@ export default function AuthPage() {
   const [password, setPassword] = useState('')
   const [name, setName] = useState('')
   const [error, setError] = useState('')
+  const [emailSent, setEmailSent] = useState(false)
   const [isPending, startTransition] = useTransition()
   const router = useRouter()
 
@@ -26,7 +27,7 @@ export default function AuthPage() {
           options: { data: { name } },
         })
         if (error) return setError(error.message)
-        router.push('/profile')
+        return setEmailSent(true)
       } else {
         const { error } = await supabase.auth.signInWithPassword({ email, password })
         if (error) return setError(error.message)
@@ -34,6 +35,21 @@ export default function AuthPage() {
       }
       router.refresh()
     })
+  }
+
+  if (emailSent) {
+    return (
+      <div className="min-h-screen flex items-center justify-center px-4">
+        <div className="w-full max-w-sm text-center">
+          <h1 className="text-3xl font-bold mb-1">blood</h1>
+          <div className="mt-8 p-5 border border-gray-100 rounded-xl">
+            <p className="text-2xl mb-3">📬</p>
+            <p className="font-semibold mb-1">Check your email</p>
+            <p className="text-sm text-gray-500">We sent a confirmation link to <span className="font-medium text-gray-700">{email}</span>. Click it to activate your account.</p>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   return (
