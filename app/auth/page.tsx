@@ -21,12 +21,32 @@ export default function AuthPage() {
 
     startTransition(async () => {
       if (mode === 'signup') {
-        const { error } = await supabase.auth.signUp({
+        const inviteCode = sessionStorage.getItem('invite_code')
+        const inviteRelationship = sessionStorage.getItem('invite_relationship')
+        const { data, error } = await supabase.auth.signUp({
           email,
           password,
-          options: { data: { name } },
+          options: { data: { name, invite_code: inviteCode, invite_relationship: inviteRelationship } },
         })
         if (error) return setError(error.message)
+        // Auto-connect to inviter after signup
+        if (data.user && inviteCode) {
+          const { data: inviter } = await supabase
+            .from('profiles')
+            .select('id')
+            .eq('invite_code', inviteCode)
+            .single()
+          if (inviter) {
+            await supabase.from('connections').upsert({
+              user_id: data.user.id,
+              connected_user_id: inviter.id,
+              relationship_type: inviteRelationship,
+              circle: 'friends',
+            })
+          }
+          sessionStorage.removeItem('invite_code')
+          sessionStorage.removeItem('invite_relationship')
+        }
         return setEmailSent(true)
       } else if (mode === 'forgot') {
         const { error } = await supabase.auth.resetPasswordForEmail(email, {
