@@ -8,7 +8,9 @@ export default function AuthPage() {
   const [mode, setMode] = useState<'login' | 'signup' | 'forgot'>('login')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [name, setName] = useState('')
+  const [name, setName] = useState(() =>
+    typeof window !== 'undefined' ? sessionStorage.getItem('claim_name') ?? '' : ''
+  )
   const [error, setError] = useState('')
   const [emailSent, setEmailSent] = useState(false)
   const [isPending, startTransition] = useTransition()
@@ -23,29 +25,53 @@ export default function AuthPage() {
       if (mode === 'signup') {
         const inviteCode = sessionStorage.getItem('invite_code')
         const inviteRelationship = sessionStorage.getItem('invite_relationship')
+        const claimId = sessionStorage.getItem('claim_id')
+        const claimName = sessionStorage.getItem('claim_name')
         const { data, error } = await supabase.auth.signUp({
           email,
           password,
-          options: { data: { name, invite_code: inviteCode, invite_relationship: inviteRelationship } },
+          options: { data: { name: name || claimName || name } },
         })
         if (error) return setError(error.message)
-        // Auto-connect to inviter after signup
-        if (data.user && inviteCode) {
-          const { data: inviter } = await supabase
-            .from('profiles')
-            .select('id')
-            .eq('invite_code', inviteCode)
-            .single()
-          if (inviter) {
-            await supabase.from('connections').upsert({
-              user_id: data.user.id,
-              connected_user_id: inviter.id,
-              relationship_type: inviteRelationship,
-              circle: 'friends',
-            })
+
+        if (data.user) {
+          // Handle invite link flow
+          if (inviteCode) {
+            const { data: inviter } = await supabase
+              .from('profiles').select('id').eq('invite_code', inviteCode).single()
+            if (inviter) {
+              await supabase.from('connections').upsert({
+                user_id: data.user.id,
+                connected_user_id: inviter.id,
+                relationship_type: inviteRelationship,
+                circle: 'friends',
+              })
+            }
+            sessionStorage.removeItem('invite_code')
+            sessionStorage.removeItem('invite_relationship')
           }
-          sessionStorage.removeItem('invite_code')
-          sessionStorage.removeItem('invite_relationship')
+          // Handle temp profile claim flow
+          if (claimId) {
+            const { data: temp } = await supabase
+              .from('temp_profiles').select('*').eq('id', claimId).single()
+            if (temp) {
+              await supabase.from('temp_profiles').update({ claimed: true, claimed_by: data.user.id }).eq('id', claimId)
+              await supabase.from('connections').upsert({
+                user_id: data.user.id,
+                connected_user_id: temp.created_by,
+                relationship_type: temp.relationship,
+                circle: temp.circle,
+              })
+              await supabase.from('connections').upsert({
+                user_id: temp.created_by,
+                connected_user_id: data.user.id,
+                relationship_type: temp.relationship,
+                circle: temp.circle,
+              })
+            }
+            sessionStorage.removeItem('claim_id')
+            sessionStorage.removeItem('claim_name')
+          }
         }
         return setEmailSent(true)
       } else if (mode === 'forgot') {
