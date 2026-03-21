@@ -3,7 +3,7 @@
 import { useState, useTransition } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
-import { Plus, Trash2, ChevronDown, ChevronRight, X } from 'lucide-react'
+import { Plus, Trash2, ChevronDown, ChevronRight, X, ArrowRight } from 'lucide-react'
 import { INDIAN_RELATIONSHIPS, RELATIONSHIP_CATEGORIES } from '@/lib/data/relationships'
 
 interface Member {
@@ -23,9 +23,8 @@ interface Member {
   parent_member_id: string | null
 }
 
-// How many generations above (+) or below (-) a member is relative to their parent node
+// How many generations above (+) or below (-) relative to parent node
 const GEN_STEP: Record<string, number> = {
-  // English
   'Father': 1, 'Mother': 1,
   'Grandfather': 2, 'Grandmother': 2,
   'Uncle': 1, 'Aunt': 1,
@@ -34,7 +33,6 @@ const GEN_STEP: Record<string, number> = {
   'Son': -1, 'Daughter': -1,
   'Nephew': -1, 'Niece': -1,
   'Grandson': -2, 'Granddaughter': -2,
-  // Hindi (first word of label)
   'Dada': 2, 'Dadi': 2, 'Nana': 2, 'Nani': 2,
   'Pardada': 3, 'Pardadi': 3, 'Parnana': 3, 'Parnani': 3,
   'Papa': 1, 'Pita': 1, 'Maa': 1, 'Mata': 1,
@@ -46,36 +44,29 @@ const GEN_STEP: Record<string, number> = {
   'Bhatija': -1, 'Bhatiji': -1, 'Bhanja': -1, 'Bhanji': -1,
 }
 
-function getGenStep(relationshipLabel: string): number {
-  const first = relationshipLabel.split(/[\s—]/)[0].trim()
-  return GEN_STEP[first] ?? GEN_STEP[relationshipLabel.trim()] ?? 0
+function getGenStep(rel: string): number {
+  const first = rel.split(/[\s—]/)[0].trim()
+  return GEN_STEP[first] ?? GEN_STEP[rel.trim()] ?? 0
 }
 
 function computeGenerations(members: Member[]): Map<string, number> {
   const memo = new Map<string, number>()
   const memberMap = new Map(members.map(m => [m.id, m]))
-
   function compute(id: string, depth = 0): number {
     if (memo.has(id)) return memo.get(id)!
-    if (depth > 20) return 0 // cycle guard
+    if (depth > 20) return 0
     const m = memberMap.get(id)
     if (!m) return 0
     const step = getGenStep(m.relationship_label)
-    if (m.parent_member_id === null) {
-      memo.set(id, step)
-      return step
-    }
+    if (m.parent_member_id === null) { memo.set(id, step); return step }
     const parentGen = compute(m.parent_member_id, depth + 1)
     const gen = parentGen + step
-    memo.set(id, gen)
-    return gen
+    memo.set(id, gen); return gen
   }
-
   for (const m of members) compute(m.id)
   return memo
 }
 
-// Infer spouse relationship
 const SPOUSE_MAP: Record<string, string> = {
   'Father': 'Mother', 'Mother': 'Father',
   'Husband': 'Wife', 'Wife': 'Husband',
@@ -89,85 +80,76 @@ function isSpouse(a: Member, b: Member): boolean {
   return SPOUSE_MAP[aRel] === bRel || SPOUSE_MAP[bRel] === aRel
 }
 
-// A nuclear family cluster: 1-2 parents + their shared children key
-interface Cluster {
-  key: string
-  members: Member[]       // the members shown in this cluster (1 or 2 spouses)
-  parentKey: string | null // key of the cluster that contains the parent_member_id node
-}
+interface Cluster { key: string; members: Member[]; parentKey: string | null }
 
 function buildClusters(members: Member[], genMap: Map<string, number>): Map<number, Cluster[]> {
   const result = new Map<number, Cluster[]>()
-
-  // Group by generation
   const byGen = new Map<number, Member[]>()
   for (const m of members) {
     const g = genMap.get(m.id) ?? 0
     if (!byGen.has(g)) byGen.set(g, [])
     byGen.get(g)!.push(m)
   }
-
   for (const [gen, genMembers] of byGen) {
-    // Group by parent_member_id
     const byParent = new Map<string | null, Member[]>()
     for (const m of genMembers) {
-      const key = m.parent_member_id
-      if (!byParent.has(key)) byParent.set(key, [])
-      byParent.get(key)!.push(m)
+      if (!byParent.has(m.parent_member_id)) byParent.set(m.parent_member_id, [])
+      byParent.get(m.parent_member_id)!.push(m)
     }
-
     const clusters: Cluster[] = []
     for (const [parentId, mems] of byParent) {
-      // Pair up spouses within this group, rest are singles
       const used = new Set<string>()
-      const pairs: Member[][] = []
       for (let i = 0; i < mems.length; i++) {
         if (used.has(mems[i].id)) continue
-        let paired = false
+        let partner: Member | null = null
         for (let j = i + 1; j < mems.length; j++) {
           if (!used.has(mems[j].id) && isSpouse(mems[i], mems[j])) {
-            pairs.push([mems[i], mems[j]])
-            used.add(mems[i].id)
-            used.add(mems[j].id)
-            paired = true
-            break
+            partner = mems[j]; used.add(mems[j].id); break
           }
         }
-        if (!paired) {
-          pairs.push([mems[i]])
-          used.add(mems[i].id)
-        }
-      }
-
-      for (const pair of pairs) {
-        const parentMember = parentId ? members.find(m => m.id === parentId) : null
-        const parentParentId = parentMember ? parentMember.parent_member_id : null
+        used.add(mems[i].id)
+        const pMember = parentId ? members.find(m => m.id === parentId) : null
         clusters.push({
-          key: pair.map(m => m.id).join('-'),
-          members: pair,
-          parentKey: parentId ?? null,
+          key: [mems[i].id, partner?.id].filter(Boolean).join('-'),
+          members: partner ? [mems[i], partner] : [mems[i]],
+          parentKey: pMember ? pMember.parent_member_id ?? null : null,
         })
       }
     }
-
     result.set(gen, clusters)
   }
-
   return result
 }
 
-function ProfileModal({
-  member, allMembers, userName, onClose, onAdd, onDelete,
-}: {
-  member: Member, allMembers: Member[], userName: string,
-  onClose: () => void, onAdd: (id: string, name: string) => void, onDelete: (id: string) => void,
+// Chain step options grouped by category
+const CHAIN_STEPS = [
+  { label: 'Parents', steps: ['Father', 'Mother'] },
+  { label: 'Siblings', steps: ['Brother', 'Sister'] },
+  { label: 'Children', steps: ['Son', 'Daughter'] },
+  { label: 'Spouse', steps: ['Husband', 'Wife'] },
+  { label: 'Grandparents', steps: ['Grandfather', 'Grandmother'] },
+  { label: 'Grandchildren', steps: ['Grandson', 'Granddaughter'] },
+  { label: 'Extended', steps: ['Uncle', 'Aunt', 'Nephew', 'Niece'] },
+]
+
+// Try to resolve a chain like ['Father', 'Brother'] → 'Chacha'
+function resolveChain(chain: string[]): { hindi: string; definition: string } | null {
+  const english = chain.join("'s ")
+  const match = INDIAN_RELATIONSHIPS.find(r =>
+    r.english.toLowerCase() === english.toLowerCase() ||
+    r.definition.toLowerCase() === english.toLowerCase()
+  )
+  return match ? { hindi: match.hindi, definition: match.definition } : null
+}
+
+function ProfileModal({ member, allMembers, userName, onClose, onAdd, onDelete }: {
+  member: Member; allMembers: Member[]; userName: string;
+  onClose: () => void; onAdd: (id: string, name: string) => void; onDelete: (id: string) => void;
 }) {
   const parentMember = member.parent_member_id ? allMembers.find(m => m.id === member.parent_member_id) : null
   const parentName = parentMember ? parentMember.name : userName
-
-  // Find same-level members (same parent_member_id) and infer relationship
   const coMembers = allMembers.filter(m => m.id !== member.id && m.parent_member_id === member.parent_member_id)
-  const inferred: { label: string; name: string }[] = coMembers.map(m => {
+  const inferred = coMembers.map(m => {
     const aRel = member.relationship_label.split(/[\s—]/)[0].trim()
     const bRel = m.relationship_label.split(/[\s—]/)[0].trim()
     if (SPOUSE_MAP[aRel] === bRel || SPOUSE_MAP[bRel] === aRel) return { label: 'Spouse', name: m.name }
@@ -183,20 +165,16 @@ function ProfileModal({
             <div>
               <h2 className="font-bold text-lg">{member.name}</h2>
               <p className="text-sm text-gray-400">{member.relationship_label} of <span className="text-gray-600">{parentName}</span></p>
-              {member.user_id && <span className="inline-block mt-1 text-xs bg-green-50 text-green-600 px-2 py-0.5 rounded-full">on blood</span>}
+              {member.user_id && <span className="inline-flex items-center gap-0.5 mt-1 text-xs text-red-600 font-medium">🩸 verified</span>}
             </div>
             <button onClick={onClose} className="text-gray-300 hover:text-gray-600 p-1"><X size={18} /></button>
           </div>
-
           {inferred.length > 0 && (
             <div className="bg-gray-50 rounded-xl p-3 mb-4">
               <p className="text-xs font-semibold text-gray-500 mb-2">Also in tree</p>
-              {inferred.map((r, i) => (
-                <p key={i} className="text-xs text-gray-600"><span className="text-gray-400">{r.label}:</span> <span className="font-medium">{r.name}</span></p>
-              ))}
+              {inferred.map((r, i) => <p key={i} className="text-xs text-gray-600"><span className="text-gray-400">{r.label}:</span> <span className="font-medium">{r.name}</span></p>)}
             </div>
           )}
-
           <div className="flex flex-col gap-2.5">
             {member.date_of_birth && <Row label="Born" value={new Date(member.date_of_birth).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })} />}
             {(member.location_city || member.location_country) && <Row label="Location" value={[member.location_city, member.location_country].filter(Boolean).join(', ')} />}
@@ -206,7 +184,6 @@ function ProfileModal({
             {member.phone && <Row label="Phone" value={member.phone} />}
             {member.notes && <Row label="Notes" value={member.notes} />}
           </div>
-
           <div className="flex gap-2 mt-5">
             <button onClick={() => { onAdd(member.id, member.name); onClose() }} className="flex-1 flex items-center justify-center gap-1.5 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-600 hover:border-gray-400 transition-colors">
               <Plus size={14} /> Add their relative
@@ -240,66 +217,25 @@ function Row({ label, value }: { label: string; value: string }) {
 function MemberCard({ member, onTap }: { member: Member; onTap: (m: Member) => void }) {
   const verified = !!member.user_id
   return (
-    <div
-      onClick={() => onTap(member)}
+    <div onClick={() => onTap(member)}
       className={`border rounded-xl bg-white px-3 py-2.5 text-center cursor-pointer active:bg-gray-50 transition-colors select-none ${verified ? 'border-red-200 hover:border-red-400' : 'border-gray-200 hover:border-gray-400'}`}
-      style={{ minWidth: 120, maxWidth: 144 }}
-    >
+      style={{ minWidth: 120, maxWidth: 144 }}>
       <p className="text-sm font-semibold text-gray-900 truncate">{member.name}</p>
       <p className="text-xs text-gray-400 truncate mt-0.5">{member.relationship_label}</p>
       {member.location_city && <p className="text-xs text-gray-300 truncate">{member.location_city}</p>}
-      {verified && (
-        <span className="inline-flex items-center gap-0.5 mt-1 text-[10px] text-red-600 font-medium">
-          🩸 verified
-        </span>
-      )}
+      {verified && <span className="inline-flex items-center gap-0.5 mt-1 text-[10px] text-red-600 font-medium">🩸 verified</span>}
     </div>
   )
 }
 
-// Renders a couple or single member with optional spouse line
 function ClusterNode({ cluster, onTap }: { cluster: Cluster; onTap: (m: Member) => void }) {
   const [a, b] = cluster.members
   return (
     <div className="flex flex-col items-center px-3">
       <div className="flex items-center gap-0">
         <MemberCard member={a} onTap={onTap} />
-        {b && (
-          <>
-            <div style={{ width: 16, height: 1, background: '#d1d5db' }} />
-            <MemberCard member={b} onTap={onTap} />
-          </>
-        )}
+        {b && <><div style={{ width: 16, height: 1, background: '#d1d5db' }} /><MemberCard member={b} onTap={onTap} /></>}
       </div>
-    </div>
-  )
-}
-
-// Connector between two generation rows
-function GenerationConnector({
-  childClusters,
-}: {
-  childClusters: Cluster[]
-}) {
-  const count = childClusters.length
-  return (
-    <div className="flex items-start justify-center" style={{ height: 36 }}>
-      {childClusters.map((cluster, i) => {
-        const isFirst = i === 0
-        const isLast = i === count - 1
-        const isOnly = count === 1
-        return (
-          <div key={cluster.key} className="flex-1 flex flex-col items-center" style={{ minWidth: 150 }}>
-            {/* Horizontal bar at top + vertical line down */}
-            <div className="relative w-full" style={{ height: 18 }}>
-              <div style={{ position: 'absolute', top: 0, left: 0, right: '50%', height: 1, background: isFirst || isOnly ? 'transparent' : '#d1d5db' }} />
-              <div style={{ position: 'absolute', top: 0, left: '50%', right: 0, height: 1, background: isLast || isOnly ? 'transparent' : '#d1d5db' }} />
-              <div style={{ position: 'absolute', top: 0, bottom: 0, left: '50%', marginLeft: -0.5, width: 1, background: '#d1d5db' }} />
-            </div>
-            <div style={{ width: 1, height: 18, background: '#d1d5db' }} />
-          </div>
-        )
-      })}
     </div>
   )
 }
@@ -308,8 +244,6 @@ const EMPTY_FORM = {
   name: '', email: '', phone: '', date_of_birth: '',
   location_city: '', location_country: '', profession: '',
   company: '', education: '', notes: '',
-  relationship_label: '', custom_relationship: '',
-  use_custom: false, use_indian: false,
 }
 
 export default function FamilyTreeClient({ members, userId, userName }: { members: Member[]; userId: string; userName: string }) {
@@ -319,18 +253,23 @@ export default function FamilyTreeClient({ members, userId, userName }: { member
   const [showModal, setShowModal] = useState(false)
   const [showProfile, setShowProfile] = useState<Member | null>(null)
   const [showExtra, setShowExtra] = useState(false)
+
+  // Starting-from member (null = tree owner)
   const [parentId, setParentId] = useState<string | null>(null)
   const [parentName, setParentName] = useState(userName)
-  const [activeCategory, setActiveCategory] = useState(RELATIONSHIP_CATEGORIES[0])
+  const [showStartPicker, setShowStartPicker] = useState(false)
+
+  // Chain builder
+  const [chain, setChain] = useState<string[]>([])
+  const [pickingStep, setPickingStep] = useState(false)
+
   const [form, setForm] = useState({ ...EMPTY_FORM })
 
   const genMap = computeGenerations(members)
   const clustersByGen = buildClusters(members, genMap)
-
-  // Sort generations descending (oldest at top, user at 0, descendants below)
   const sortedGens = [...clustersByGen.keys()].sort((a, b) => b - a)
 
-  function set(field: string, value: string | boolean) {
+  function setField(field: string, value: string) {
     setForm(f => ({ ...f, [field]: value }))
   }
 
@@ -338,16 +277,31 @@ export default function FamilyTreeClient({ members, userId, userName }: { member
     setParentId(pId)
     setParentName(pName)
     setForm({ ...EMPTY_FORM })
+    setChain([])
+    setPickingStep(false)
+    setShowStartPicker(false)
     setShowExtra(false)
     setAddError(null)
     setShowModal(true)
   }
 
-  const selectedRelationship = form.use_custom ? form.custom_relationship : form.relationship_label
+  const chainLabel = chain.join("'s ")
+  const resolved = chain.length > 0 ? resolveChain(chain) : null
+
+  function addStep(step: string) {
+    setChain(c => [...c, step])
+    setPickingStep(false)
+  }
+
+  function removeLastStep() {
+    setChain(c => c.slice(0, -1))
+  }
+
+  const canSubmit = form.name.trim() !== '' && chain.length > 0
 
   function handleAdd(e: React.FormEvent) {
     e.preventDefault()
-    if (!form.name || !selectedRelationship) return
+    if (!canSubmit) return
     setAddError(null)
     const supabase = createClient()
     startTransition(async () => {
@@ -358,7 +312,8 @@ export default function FamilyTreeClient({ members, userId, userName }: { member
         location_city: form.location_city || null, location_country: form.location_country || null,
         profession: form.profession || null, company: form.company || null,
         education: form.education || null, notes: form.notes || null,
-        relationship_label: selectedRelationship, parent_member_id: parentId,
+        relationship_label: chainLabel,
+        parent_member_id: parentId,
       })
       if (error) { setAddError(error.message); return }
       setShowModal(false)
@@ -374,94 +329,59 @@ export default function FamilyTreeClient({ members, userId, userName }: { member
     })
   }
 
-  const categoryRelationships = INDIAN_RELATIONSHIPS.filter(r => r.category === activeCategory)
-
   return (
     <div>
+      {/* Tree */}
       <div className="overflow-x-auto pb-8">
         <div className="flex flex-col items-center" style={{ minWidth: 'max-content' }}>
-
           {members.length === 0 ? (
             <>
-              {/* User node */}
               <div className="border-2 border-gray-900 rounded-xl bg-gray-900 text-white px-4 py-2.5 text-center" style={{ minWidth: 140 }}>
                 <p className="text-sm font-semibold">{userName}</p>
                 <p className="text-xs text-gray-400 mt-0.5">You</p>
               </div>
               <div style={{ width: 1, height: 28, background: '#d1d5db' }} />
-              <button
-                onClick={() => openAdd(null, userName)}
-                className="border border-dashed border-gray-300 rounded-xl px-4 py-3 text-xs text-gray-400 hover:border-gray-500 hover:text-gray-600 transition-colors flex items-center gap-1.5"
-              >
+              <button onClick={() => openAdd(null, userName)} className="border border-dashed border-gray-300 rounded-xl px-4 py-3 text-xs text-gray-400 hover:border-gray-500 hover:text-gray-600 transition-colors flex items-center gap-1.5">
                 <Plus size={13} /> Add first relative
               </button>
             </>
           ) : (
             <>
-              {/* Generations above user (oldest first) */}
-              {sortedGens.filter(g => g > 0).map((gen, gi, arr) => (
+              {sortedGens.filter(g => g > 0).map((gen) => (
                 <div key={gen} className="flex flex-col items-center w-full">
-                  {gi === 0 && (
-                    <p className="text-[10px] text-gray-300 mb-2 uppercase tracking-widest">
-                      {gen === 1 ? 'Parents' : gen === 2 ? 'Grandparents' : `Generation +${gen}`}
-                    </p>
-                  )}
-                  {gi > 0 && (
-                    <p className="text-[10px] text-gray-300 mb-2 uppercase tracking-widest">
-                      {gen === 1 ? 'Parents' : gen === 2 ? 'Grandparents' : `Generation +${gen}`}
-                    </p>
-                  )}
+                  <p className="text-[10px] text-gray-300 mb-2 uppercase tracking-widest">{gen === 1 ? 'Parents' : gen === 2 ? 'Grandparents' : `Generation +${gen}`}</p>
                   <div className="flex items-start justify-center">
-                    {(clustersByGen.get(gen) ?? []).map(cluster => (
-                      <ClusterNode key={cluster.key} cluster={cluster} onTap={setShowProfile} />
-                    ))}
+                    {(clustersByGen.get(gen) ?? []).map(cluster => <ClusterNode key={cluster.key} cluster={cluster} onTap={setShowProfile} />)}
                   </div>
-                  {/* Connector going down */}
                   <div style={{ width: 1, height: 32, background: '#d1d5db' }} />
                 </div>
               ))}
 
-              {/* User's generation row */}
               <div className="flex flex-col items-center w-full">
-                {sortedGens.some(g => g > 0) && (
-                  <p className="text-[10px] text-gray-300 mb-2 uppercase tracking-widest">Your generation</p>
-                )}
+                {sortedGens.some(g => g > 0) && <p className="text-[10px] text-gray-300 mb-2 uppercase tracking-widest">Your generation</p>}
                 <div className="flex items-start justify-center gap-0">
-                  {/* User node */}
                   <div className="flex flex-col items-center px-3">
                     <div className="border-2 border-gray-900 rounded-xl bg-gray-900 text-white px-3 py-2.5 text-center" style={{ minWidth: 120 }}>
                       <p className="text-sm font-semibold truncate">{userName}</p>
                       <p className="text-xs text-gray-400 mt-0.5">You</p>
                     </div>
                   </div>
-                  {/* Same-generation members */}
-                  {(clustersByGen.get(0) ?? []).map(cluster => (
-                    <ClusterNode key={cluster.key} cluster={cluster} onTap={setShowProfile} />
-                  ))}
+                  {(clustersByGen.get(0) ?? []).map(cluster => <ClusterNode key={cluster.key} cluster={cluster} onTap={setShowProfile} />)}
                 </div>
               </div>
 
-              {/* Connector + generations below user */}
               {sortedGens.filter(g => g < 0).map((gen) => (
                 <div key={gen} className="flex flex-col items-center w-full">
                   <div style={{ width: 1, height: 32, background: '#d1d5db' }} />
-                  <p className="text-[10px] text-gray-300 mb-2 uppercase tracking-widest">
-                    {gen === -1 ? 'Children' : gen === -2 ? 'Grandchildren' : `Generation ${gen}`}
-                  </p>
+                  <p className="text-[10px] text-gray-300 mb-2 uppercase tracking-widest">{gen === -1 ? 'Children' : gen === -2 ? 'Grandchildren' : `Generation ${gen}`}</p>
                   <div className="flex items-start justify-center">
-                    {(clustersByGen.get(gen) ?? []).map(cluster => (
-                      <ClusterNode key={cluster.key} cluster={cluster} onTap={setShowProfile} />
-                    ))}
+                    {(clustersByGen.get(gen) ?? []).map(cluster => <ClusterNode key={cluster.key} cluster={cluster} onTap={setShowProfile} />)}
                   </div>
                 </div>
               ))}
 
-              {/* Add more */}
               <div className="mt-8">
-                <button
-                  onClick={() => openAdd(null, userName)}
-                  className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-700 border border-gray-200 rounded-lg px-3 py-1.5 transition-colors"
-                >
+                <button onClick={() => openAdd(null, userName)} className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-700 border border-gray-200 rounded-lg px-3 py-1.5 transition-colors">
                   <Plus size={12} /> Add relative of {userName}
                 </button>
               </div>
@@ -470,14 +390,11 @@ export default function FamilyTreeClient({ members, userId, userName }: { member
         </div>
       </div>
 
-      {members.length > 0 && (
-        <p className="text-center text-xs text-gray-300 -mt-4 mb-4">Tap a person to view their profile</p>
-      )}
+      {members.length > 0 && <p className="text-center text-xs text-gray-300 -mt-4 mb-4">Tap a person to view their profile</p>}
 
       {/* Profile modal */}
       {showProfile && (
-        <ProfileModal
-          member={showProfile} allMembers={members} userName={userName}
+        <ProfileModal member={showProfile} allMembers={members} userName={userName}
           onClose={() => setShowProfile(null)}
           onAdd={(id, name) => { setShowProfile(null); openAdd(id, name) }}
           onDelete={(id) => { setShowProfile(null); handleDelete(id) }}
@@ -486,103 +403,152 @@ export default function FamilyTreeClient({ members, userId, userName }: { member
 
       {/* Add modal */}
       {showModal && (
-        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 px-4">
-          <div className="bg-white rounded-xl w-full max-w-sm max-h-[92vh] overflow-y-auto">
+        <div className="fixed inset-0 bg-black/30 flex items-end sm:items-center justify-center z-50">
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl w-full max-w-sm max-h-[92vh] overflow-y-auto">
             <div className="p-5">
-              <h2 className="font-semibold mb-0.5">Add relative</h2>
-              <p className="text-xs text-gray-400 mb-4">Adding a relative of <span className="font-medium text-gray-700">{parentName}</span></p>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="font-semibold">Add relative</h2>
+                <button onClick={() => setShowModal(false)} className="text-gray-300 hover:text-gray-600"><X size={18} /></button>
+              </div>
 
-              <form onSubmit={handleAdd} className="flex flex-col gap-3">
-                <input placeholder="Their name *" required value={form.name} onChange={e => set('name', e.target.value)}
+              <form onSubmit={handleAdd} className="flex flex-col gap-4">
+
+                {/* Their name */}
+                <input placeholder="Their name *" required value={form.name} onChange={e => setField('name', e.target.value)}
                   className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-gray-400" />
-                <input placeholder="Email" type="email" value={form.email} onChange={e => set('email', e.target.value)}
-                  className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-gray-400" />
-                <input placeholder="Phone" value={form.phone} onChange={e => set('phone', e.target.value)}
-                  className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-gray-400" />
+
+                {/* ── Relationship chain ── */}
                 <div>
-                  <label className="text-xs text-gray-400 mb-1 block">Date of birth</label>
-                  <input type="date" value={form.date_of_birth} onChange={e => set('date_of_birth', e.target.value)}
-                    className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-gray-400" />
-                </div>
+                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Relationship</p>
 
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <p className="text-xs text-gray-500 font-medium">Relationship to <span className="text-gray-700">{parentName}</span> *</p>
-                    <label className="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer select-none">
-                      <input type="checkbox" checked={form.use_indian}
-                        onChange={e => { set('use_indian', e.target.checked); set('relationship_label', '') }}
-                        className="w-3.5 h-3.5" />
-                      Hindi terms
-                    </label>
-                  </div>
-
-                  {form.use_indian ? (
-                    <>
-                      <div className="flex gap-1 flex-wrap mb-2">
-                        {RELATIONSHIP_CATEGORIES.map(cat => (
-                          <button key={cat} type="button" onClick={() => setActiveCategory(cat)}
-                            className={`px-2 py-0.5 rounded-full text-xs font-medium transition-colors ${activeCategory === cat ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600'}`}>
-                            {cat}
+                  {/* Starting from */}
+                  <div className="mb-3">
+                    <p className="text-xs text-gray-400 mb-1">Starting from</p>
+                    <button type="button" onClick={() => setShowStartPicker(s => !s)}
+                      className="w-full flex items-center justify-between border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-700 hover:border-gray-400 transition-colors">
+                      <span>{parentName}</span>
+                      <ChevronDown size={14} className="text-gray-400" />
+                    </button>
+                    {showStartPicker && (
+                      <div className="border border-gray-200 rounded-lg mt-1 overflow-hidden">
+                        <button type="button" onClick={() => { setParentId(null); setParentName(userName); setShowStartPicker(false) }}
+                          className={`w-full text-left px-3 py-2 text-sm hover:bg-gray-50 ${parentId === null ? 'font-medium' : ''}`}>
+                          {userName} (you)
+                        </button>
+                        {members.map(m => (
+                          <button key={m.id} type="button"
+                            onClick={() => { setParentId(m.id); setParentName(m.name); setShowStartPicker(false); setChain([]) }}
+                            className={`w-full text-left px-3 py-2 text-sm hover:bg-gray-50 border-t border-gray-50 ${parentId === m.id ? 'font-medium' : ''}`}>
+                            {m.name}
+                            <span className="text-xs text-gray-400 ml-1.5">{m.relationship_label}</span>
                           </button>
                         ))}
                       </div>
-                      <div className="flex flex-wrap gap-1 mb-2">
-                        {categoryRelationships.map(r => {
-                          const label = `${r.hindi} — ${r.english}`
-                          return (
-                            <button key={r.hindi} type="button"
-                              onClick={() => { set('relationship_label', label); set('use_custom', false) }}
-                              className={`px-2.5 py-1 rounded-full text-xs border transition-colors ${!form.use_custom && form.relationship_label === label ? 'bg-gray-900 text-white border-gray-900' : 'border-gray-200 text-gray-600 hover:border-gray-400'}`}>
-                              {r.hindi}
-                            </button>
-                          )
-                        })}
-                      </div>
-                    </>
-                  ) : (
-                    <div className="flex flex-wrap gap-1 mb-2">
-                      {['Father', 'Mother', 'Brother', 'Sister', 'Son', 'Daughter', 'Grandfather', 'Grandmother', 'Uncle', 'Aunt', 'Cousin', 'Husband', 'Wife', 'Nephew', 'Niece'].map(r => (
-                        <button key={r} type="button"
-                          onClick={() => { set('relationship_label', r); set('use_custom', false) }}
-                          className={`px-2.5 py-1 rounded-full text-xs border transition-colors ${!form.use_custom && form.relationship_label === r ? 'bg-gray-900 text-white border-gray-900' : 'border-gray-200 text-gray-600 hover:border-gray-400'}`}>
-                          {r}
-                        </button>
+                    )}
+                  </div>
+
+                  {/* Chain builder */}
+                  <div className="mb-1">
+                    <p className="text-xs text-gray-400 mb-2">
+                      {parentName}'s <span className="text-gray-600">→ build the chain</span>
+                    </p>
+
+                    {/* Current chain display */}
+                    <div className="flex items-center flex-wrap gap-1 mb-2 min-h-[32px]">
+                      {chain.length === 0 && !pickingStep && (
+                        <span className="text-xs text-gray-300 italic">No steps yet — pick a relationship below</span>
+                      )}
+                      {chain.map((step, i) => (
+                        <div key={i} className="flex items-center gap-1">
+                          {i > 0 && <ArrowRight size={10} className="text-gray-300" />}
+                          <span className="bg-gray-900 text-white text-xs px-2.5 py-1 rounded-full">{step}</span>
+                        </div>
                       ))}
+                      {chain.length > 0 && (
+                        <button type="button" onClick={removeLastStep} className="text-xs text-gray-400 hover:text-red-400 ml-1">✕</button>
+                      )}
+                    </div>
+
+                    {/* Hindi resolution */}
+                    {resolved && (
+                      <div className="bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 mb-2">
+                        <p className="text-xs text-amber-700">
+                          <span className="font-semibold">{resolved.hindi}</span>
+                          <span className="text-amber-500 ml-1.5">— {resolved.definition}</span>
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Step picker */}
+                    {pickingStep ? (
+                      <div className="border border-gray-200 rounded-xl p-3 flex flex-col gap-2">
+                        <div className="flex items-center justify-between mb-1">
+                          <p className="text-xs font-medium text-gray-600">Pick next step</p>
+                          <button type="button" onClick={() => setPickingStep(false)} className="text-gray-300 hover:text-gray-600"><X size={14} /></button>
+                        </div>
+                        {CHAIN_STEPS.map(group => (
+                          <div key={group.label}>
+                            <p className="text-[10px] text-gray-400 uppercase tracking-wide mb-1">{group.label}</p>
+                            <div className="flex flex-wrap gap-1">
+                              {group.steps.map(step => (
+                                <button key={step} type="button" onClick={() => addStep(step)}
+                                  className="px-3 py-1.5 rounded-full text-xs border border-gray-200 text-gray-600 hover:bg-gray-900 hover:text-white hover:border-gray-900 transition-colors">
+                                  {step}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <button type="button" onClick={() => setPickingStep(true)}
+                        className="flex items-center gap-1.5 text-xs border border-dashed border-gray-300 rounded-lg px-3 py-2 text-gray-500 hover:border-gray-500 w-full justify-center transition-colors">
+                        <Plus size={12} /> {chain.length === 0 ? 'Pick first step' : 'Add another step'}
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Final label preview */}
+                  {chain.length > 0 && form.name && (
+                    <div className="bg-gray-50 rounded-lg p-2.5 text-xs text-gray-500 mt-2">
+                      <span className="font-medium text-gray-700">{form.name}</span> is {parentName}'s{' '}
+                      <span className="font-medium text-gray-700">{chainLabel}</span>
+                      {resolved && <span className="text-gray-400"> ({resolved.hindi})</span>}
                     </div>
                   )}
-
-                  <input placeholder="Or type anything custom..."
-                    value={form.custom_relationship}
-                    onChange={e => { set('custom_relationship', e.target.value); set('use_custom', true) }}
-                    onFocus={() => set('use_custom', true)}
-                    className={`w-full border rounded-lg px-3 py-2 text-sm outline-none transition-colors ${form.use_custom ? 'border-gray-900' : 'border-gray-200 focus:border-gray-400'}`}
-                  />
                 </div>
 
-                {form.name && selectedRelationship && (
-                  <div className="bg-gray-50 rounded-lg p-2.5 text-xs text-gray-500">
-                    <span className="font-medium text-gray-700">{form.name}</span> is the{' '}
-                    <span className="font-medium text-gray-700">{selectedRelationship}</span> of{' '}
-                    <span className="font-medium text-gray-700">{parentName}</span>
+                {/* Contact */}
+                <div className="flex flex-col gap-2">
+                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Contact (optional)</p>
+                  <input placeholder="Email" type="email" value={form.email} onChange={e => setField('email', e.target.value)}
+                    className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-gray-400" />
+                  <input placeholder="Phone" value={form.phone} onChange={e => setField('phone', e.target.value)}
+                    className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-gray-400" />
+                  <div>
+                    <label className="text-xs text-gray-400 mb-1 block">Date of birth</label>
+                    <input type="date" value={form.date_of_birth} onChange={e => setField('date_of_birth', e.target.value)}
+                      className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-gray-400" />
                   </div>
-                )}
+                </div>
 
+                {/* Extra details */}
                 <button type="button" onClick={() => setShowExtra(e => !e)}
                   className="text-xs text-gray-400 hover:text-gray-700 text-left flex items-center gap-1">
                   {showExtra ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                  {showExtra ? 'Hide' : 'Add'} extra details
+                  {showExtra ? 'Hide' : 'Add'} extra details (location, profession, education, notes)
                 </button>
 
                 {showExtra && (
                   <div className="flex flex-col gap-2 border-t border-gray-100 pt-3">
                     <div className="flex gap-2">
-                      <input placeholder="City" value={form.location_city} onChange={e => set('location_city', e.target.value)} className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-gray-400 min-w-0" />
-                      <input placeholder="Country" value={form.location_country} onChange={e => set('location_country', e.target.value)} className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-gray-400 min-w-0" />
+                      <input placeholder="City" value={form.location_city} onChange={e => setField('location_city', e.target.value)} className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-gray-400 min-w-0" />
+                      <input placeholder="Country" value={form.location_country} onChange={e => setField('location_country', e.target.value)} className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-gray-400 min-w-0" />
                     </div>
-                    <input placeholder="Profession / Job role" value={form.profession} onChange={e => set('profession', e.target.value)} className="border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-gray-400" />
-                    <input placeholder="Company" value={form.company} onChange={e => set('company', e.target.value)} className="border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-gray-400" />
-                    <input placeholder="Education / College" value={form.education} onChange={e => set('education', e.target.value)} className="border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-gray-400" />
-                    <textarea placeholder="Notes" value={form.notes} onChange={e => set('notes', e.target.value)} rows={2} className="border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-gray-400 resize-none" />
+                    <input placeholder="Profession / Job role" value={form.profession} onChange={e => setField('profession', e.target.value)} className="border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-gray-400" />
+                    <input placeholder="Company" value={form.company} onChange={e => setField('company', e.target.value)} className="border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-gray-400" />
+                    <input placeholder="Education / College" value={form.education} onChange={e => setField('education', e.target.value)} className="border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-gray-400" />
+                    <textarea placeholder="Notes" value={form.notes} onChange={e => setField('notes', e.target.value)} rows={2} className="border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-gray-400 resize-none" />
                   </div>
                 )}
 
@@ -590,8 +556,7 @@ export default function FamilyTreeClient({ members, userId, userName }: { member
 
                 <div className="flex gap-2 pt-1">
                   <button type="button" onClick={() => setShowModal(false)} className="flex-1 py-2.5 border border-gray-200 rounded-lg text-sm">Cancel</button>
-                  <button type="submit" disabled={!form.name || !selectedRelationship || isPending}
-                    className="flex-1 py-2.5 bg-gray-900 text-white rounded-lg text-sm disabled:opacity-50">
+                  <button type="submit" disabled={!canSubmit || isPending} className="flex-1 py-2.5 bg-gray-900 text-white rounded-lg text-sm disabled:opacity-50">
                     {isPending ? 'Adding...' : 'Add'}
                   </button>
                 </div>
