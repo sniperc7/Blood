@@ -101,12 +101,13 @@ const EMPTY_FORM = {
   location_city: '', location_country: '', profession: '',
   company: '', education: '', notes: '',
   relationship_label: '', custom_relationship: '',
-  use_custom: false, use_indian: true,
+  use_custom: false, use_indian: false,
 }
 
 export default function FamilyTreeClient({ members, userId, userName }: { members: Member[]; userId: string; userName: string }) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
+  const [addError, setAddError] = useState<string | null>(null)
   const [showModal, setShowModal] = useState(false)
   const [showExtra, setShowExtra] = useState(false)
   const [parentId, setParentId] = useState<string | null>(null)
@@ -135,9 +136,10 @@ export default function FamilyTreeClient({ members, userId, userName }: { member
   function handleAdd(e: React.FormEvent) {
     e.preventDefault()
     if (!form.name || !selectedRelationship) return
+    setAddError(null)
     const supabase = createClient()
     startTransition(async () => {
-      await supabase.from('family_tree_members').insert({
+      const { error } = await supabase.from('family_tree_members').insert({
         tree_owner_id: userId,
         name: form.name,
         email: form.email || null,
@@ -152,6 +154,10 @@ export default function FamilyTreeClient({ members, userId, userName }: { member
         relationship_label: selectedRelationship,
         parent_member_id: parentId,
       })
+      if (error) {
+        setAddError(error.message)
+        return
+      }
       setShowModal(false)
       router.refresh()
     })
@@ -250,22 +256,15 @@ export default function FamilyTreeClient({ members, userId, userName }: { member
                     <p className="text-xs text-gray-500 font-medium">
                       Relationship to <span className="text-gray-700">{parentName}</span> *
                     </p>
-                    <div className="flex text-xs border border-gray-200 rounded-lg overflow-hidden">
-                      <button
-                        type="button"
-                        onClick={() => set('use_indian', true)}
-                        className={`px-2 py-1 ${form.use_indian ? 'bg-gray-900 text-white' : 'text-gray-500'}`}
-                      >
-                        Indian
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => set('use_indian', false)}
-                        className={`px-2 py-1 ${!form.use_indian ? 'bg-gray-900 text-white' : 'text-gray-500'}`}
-                      >
-                        English
-                      </button>
-                    </div>
+                    <label className="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={form.use_indian}
+                        onChange={e => { set('use_indian', e.target.checked); set('relationship_label', '') }}
+                        className="w-3.5 h-3.5"
+                      />
+                      Hindi terms
+                    </label>
                   </div>
 
                   {form.use_indian ? (
@@ -397,6 +396,10 @@ export default function FamilyTreeClient({ members, userId, userName }: { member
                       className="border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-gray-400 resize-none"
                     />
                   </div>
+                )}
+
+                {addError && (
+                  <p className="text-xs text-red-500 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{addError}</p>
                 )}
 
                 <div className="flex gap-2 pt-1">

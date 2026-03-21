@@ -41,6 +41,7 @@ export default function ProfileForm({ profile, userId }: { profile: Profile | nu
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
   const [saved, setSaved] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const [expertiseInput, setExpertiseInput] = useState('')
 
   const [form, setForm] = useState({
@@ -102,14 +103,19 @@ export default function ProfileForm({ profile, userId }: { profile: Profile | nu
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    setError(null)
     const supabase = createClient()
     startTransition(async () => {
       const name = [form.first_name, form.middle_name, form.last_name].filter(Boolean).join(' ') || profile?.name || ''
-      await supabase.from('profiles').upsert({
+      const { error: saveError } = await supabase.from('profiles').upsert({
         id: userId,
         name,
         ...form,
       })
+      if (saveError) {
+        setError(saveError.message)
+        return
+      }
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
       router.refresh()
@@ -309,6 +315,10 @@ export default function ProfileForm({ profile, userId }: { profile: Profile | nu
           ))}
         </div>
       </section>
+
+      {error && (
+        <p className="text-sm text-red-500 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{error}</p>
+      )}
 
       <button
         type="submit"
