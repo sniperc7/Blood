@@ -2,17 +2,18 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { User, Users, MessageSquare, Search, BookUser, GitBranch, LogOut } from 'lucide-react'
+import { User, Users, MessageSquare, Search, BookUser, GitBranch, BookOpen, LogOut } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
 
 const links = [
-  { href: '/profile', label: 'Profile', icon: User },
-  { href: '/circles', label: 'Circles', icon: Users },
-  { href: '/family-tree', label: 'Family', icon: GitBranch },
-  { href: '/ask', label: 'Ask', icon: MessageSquare },
-  { href: '/search', label: 'Search', icon: Search },
-  { href: '/contacts', label: 'Contacts', icon: BookUser },
+  { href: '/profile', label: 'Profile', icon: User, mobileVisible: true },
+  { href: '/circles', label: 'Circles', icon: Users, mobileVisible: true },
+  { href: '/family-tree', label: 'Family', icon: GitBranch, mobileVisible: true },
+  { href: '/ask', label: 'Ask', icon: MessageSquare, mobileVisible: true },
+  { href: '/search', label: 'Search', icon: Search, mobileVisible: true },
+  { href: '/contacts', label: 'Contacts', icon: BookUser, mobileVisible: false },
+  { href: '/reference', label: 'Reference', icon: BookOpen, mobileVisible: false },
 ]
 
 export default function Nav() {
@@ -57,9 +58,9 @@ export default function Nav() {
         </button>
       </aside>
 
-      {/* Mobile bottom bar — show first 5 only */}
+      {/* Mobile bottom bar — 5 most important */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-gray-100 flex justify-around py-2 z-50">
-        {links.slice(0, 5).map(({ href, label, icon: Icon }) => (
+        {links.filter(l => l.mobileVisible).map(({ href, label, icon: Icon }) => (
           <Link
             key={href}
             href={href}

@@ -30,6 +30,7 @@ interface Profile {
   linkedin_url: string | null
   instagram_url: string | null
   facebook_url: string | null
+  date_of_birth: string | null
   invite_code: string | null
 }
 
@@ -59,6 +60,7 @@ export default function ProfileForm({ profile, userId }: { profile: Profile | nu
     expertise_tags: profile?.expertise_tags ?? [],
     countries_visited: profile?.countries_visited ?? [],
     phone: profile?.phone ?? '',
+    date_of_birth: profile?.date_of_birth ?? '',
     linkedin_url: profile?.linkedin_url ?? '',
     instagram_url: profile?.instagram_url ?? '',
     facebook_url: profile?.facebook_url ?? '',
@@ -274,6 +276,17 @@ export default function ProfileForm({ profile, userId }: { profile: Profile | nu
             </span>
           ))}
         </div>
+      </section>
+
+      {/* Date of birth */}
+      <section>
+        <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Date of Birth</p>
+        <input
+          type="date"
+          value={form.date_of_birth}
+          onChange={e => setForm(f => ({ ...f, date_of_birth: e.target.value }))}
+          className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-gray-400"
+        />
       </section>
 
       {/* Socials */}
