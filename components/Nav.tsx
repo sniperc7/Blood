@@ -2,17 +2,16 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { User, Users, MessageSquare, Search, BookUser, GitBranch, BookOpen, LogOut } from 'lucide-react'
+import { Globe, GitBranch, MessageSquare, Search, User, BookOpen, LogOut } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
 
 const links = [
-  { href: '/profile', label: 'Profile', icon: User, mobileVisible: true },
-  { href: '/circles', label: 'Circles', icon: Users, mobileVisible: true },
+  { href: '/home', label: 'Globe', icon: Globe, mobileVisible: true },
   { href: '/family-tree', label: 'Family', icon: GitBranch, mobileVisible: true },
   { href: '/ask', label: 'Ask', icon: MessageSquare, mobileVisible: true },
   { href: '/search', label: 'Search', icon: Search, mobileVisible: true },
-  { href: '/contacts', label: 'Contacts', icon: BookUser, mobileVisible: false },
+  { href: '/profile', label: 'Profile', icon: User, mobileVisible: true },
   { href: '/reference', label: 'Reference', icon: BookOpen, mobileVisible: false },
 ]
 
@@ -29,7 +28,7 @@ export default function Nav() {
   return (
     <>
       {/* Desktop sidebar */}
-      <aside className="hidden md:flex flex-col w-56 shrink-0 border-r border-gray-100 min-h-screen p-4">
+      <aside className="hidden md:flex flex-col w-52 shrink-0 border-r border-gray-100 min-h-screen p-4">
         <div className="mb-8 px-2">
           <span className="text-xl font-bold tracking-tight">blood</span>
         </div>
@@ -39,7 +38,7 @@ export default function Nav() {
               key={href}
               href={href}
               className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                pathname.startsWith(href)
+                pathname === href || (href !== '/home' && pathname.startsWith(href))
                   ? 'bg-gray-100 text-gray-900'
                   : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
               }`}
@@ -58,14 +57,16 @@ export default function Nav() {
         </button>
       </aside>
 
-      {/* Mobile bottom bar — 5 most important */}
+      {/* Mobile bottom bar */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-gray-100 flex justify-around py-2 z-50">
         {links.filter(l => l.mobileVisible).map(({ href, label, icon: Icon }) => (
           <Link
             key={href}
             href={href}
             className={`flex flex-col items-center gap-0.5 px-2 py-1 text-xs ${
-              pathname.startsWith(href) ? 'text-gray-900' : 'text-gray-400'
+              pathname === href || (href !== '/home' && pathname.startsWith(href))
+                ? 'text-gray-900'
+                : 'text-gray-400'
             }`}
           >
             <Icon size={20} />
