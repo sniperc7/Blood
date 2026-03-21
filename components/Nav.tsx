@@ -2,13 +2,14 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Home, Users, MessageSquare, Search, BookUser, LogOut } from 'lucide-react'
+import { User, Users, MessageSquare, Search, BookUser, GitBranch, LogOut } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
 
 const links = [
-  { href: '/profile', label: 'Home', icon: Home },
+  { href: '/profile', label: 'Profile', icon: User },
   { href: '/circles', label: 'Circles', icon: Users },
+  { href: '/family-tree', label: 'Family', icon: GitBranch },
   { href: '/ask', label: 'Ask', icon: MessageSquare },
   { href: '/search', label: 'Search', icon: Search },
   { href: '/contacts', label: 'Contacts', icon: BookUser },
@@ -56,13 +57,13 @@ export default function Nav() {
         </button>
       </aside>
 
-      {/* Mobile bottom bar */}
+      {/* Mobile bottom bar — show first 5 only */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-gray-100 flex justify-around py-2 z-50">
-        {links.map(({ href, label, icon: Icon }) => (
+        {links.slice(0, 5).map(({ href, label, icon: Icon }) => (
           <Link
             key={href}
             href={href}
-            className={`flex flex-col items-center gap-0.5 px-3 py-1 text-xs ${
+            className={`flex flex-col items-center gap-0.5 px-2 py-1 text-xs ${
               pathname.startsWith(href) ? 'text-gray-900' : 'text-gray-400'
             }`}
           >
