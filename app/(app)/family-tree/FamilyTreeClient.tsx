@@ -3,8 +3,7 @@
 import { useState, useTransition } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
-import { Plus, Trash2, ChevronDown, ChevronRight, BookOpen } from 'lucide-react'
-import Link from 'next/link'
+import { Plus, Trash2, ChevronDown, ChevronRight } from 'lucide-react'
 import { INDIAN_RELATIONSHIPS, RELATIONSHIP_CATEGORIES } from '@/lib/data/relationships'
 
 interface Member {
@@ -34,64 +33,120 @@ function buildTree(members: Member[], parentId: string | null): TreeNode[] {
     .map(m => ({ ...m, children: buildTree(members, m.id) }))
 }
 
-function TreeNodeView({
+function NodeCard({
   node,
   onAdd,
   onDelete,
-  depth = 0,
 }: {
   node: TreeNode
-  onAdd: (parentId: string, parentName: string) => void
+  onAdd: (id: string, name: string) => void
   onDelete: (id: string) => void
-  depth?: number
 }) {
-  const [expanded, setExpanded] = useState(true)
-  const hasChildren = node.children.length > 0
+  const [showActions, setShowActions] = useState(false)
 
   return (
-    <div className={`${depth > 0 ? 'ml-6 border-l border-gray-100 pl-4' : ''} mt-2`}>
-      <div className="flex items-center gap-2 group">
-        <button
-          onClick={() => setExpanded(e => !e)}
-          className={`text-gray-300 shrink-0 ${hasChildren ? 'visible' : 'invisible'}`}
-        >
-          {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-        </button>
-        <div className="flex-1 flex items-center gap-2 border border-gray-100 rounded-xl px-3 py-2 bg-white">
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-sm font-medium">{node.name}</span>
-              <span className="text-xs text-gray-400">{node.relationship_label}</span>
-              {node.user_id && (
-                <span className="text-xs bg-green-50 text-green-600 px-1.5 py-0.5 rounded-full">on blood</span>
-              )}
-            </div>
-            {(node.profession || node.location_city) && (
-              <p className="text-xs text-gray-400 mt-0.5">
-                {[node.profession, node.location_city, node.location_country].filter(Boolean).join(' · ')}
-              </p>
-            )}
-            {node.date_of_birth && (
-              <p className="text-xs text-gray-400">{new Date(node.date_of_birth).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</p>
-            )}
-          </div>
-          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-            <button
-              onClick={() => onAdd(node.id, node.name)}
-              className="text-gray-300 hover:text-gray-700 p-1"
-              title={`Add relative of ${node.name}`}
-            >
-              <Plus size={14} />
-            </button>
-            <button onClick={() => onDelete(node.id)} className="text-gray-300 hover:text-red-400 p-1">
-              <Trash2 size={14} />
-            </button>
-          </div>
-        </div>
+    <div
+      className="relative group"
+      onClick={() => setShowActions(s => !s)}
+    >
+      <div className="border border-gray-200 rounded-xl bg-white px-3 py-2.5 w-36 text-center cursor-pointer hover:border-gray-400 transition-colors select-none">
+        <p className="text-sm font-semibold text-gray-900 truncate">{node.name}</p>
+        <p className="text-xs text-gray-400 truncate mt-0.5">{node.relationship_label}</p>
+        {node.location_city && (
+          <p className="text-xs text-gray-300 truncate">{node.location_city}</p>
+        )}
+        {node.user_id && (
+          <span className="inline-block mt-1 text-[10px] bg-green-50 text-green-600 px-1.5 py-0.5 rounded-full">on blood</span>
+        )}
       </div>
-      {expanded && node.children.map(child => (
-        <TreeNodeView key={child.id} node={child} onAdd={onAdd} onDelete={onDelete} depth={depth + 1} />
-      ))}
+
+      {showActions && (
+        <div className="absolute -top-2 -right-2 flex gap-1 z-10">
+          <button
+            onClick={e => { e.stopPropagation(); onAdd(node.id, node.name); setShowActions(false) }}
+            className="w-6 h-6 bg-gray-900 text-white rounded-full flex items-center justify-center shadow-sm"
+            title="Add relative"
+          >
+            <Plus size={12} />
+          </button>
+          <button
+            onClick={e => { e.stopPropagation(); onDelete(node.id); setShowActions(false) }}
+            className="w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center shadow-sm"
+            title="Remove"
+          >
+            <Trash2 size={10} />
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function TreeBranch({
+  node,
+  onAdd,
+  onDelete,
+  index,
+  total,
+}: {
+  node: TreeNode
+  onAdd: (id: string, name: string) => void
+  onDelete: (id: string) => void
+  index: number
+  total: number
+}) {
+  const isFirst = index === 0
+  const isLast = index === total - 1
+  const isOnly = total === 1
+
+  return (
+    <div className="flex flex-col items-center">
+      {/* Connector from parent horizontal bar down to this node */}
+      <div className="relative w-full flex justify-center" style={{ height: 28 }}>
+        {/* Left half of horizontal bar */}
+        <div
+          style={{
+            position: 'absolute', top: 0, left: 0, right: '50%',
+            height: 1, background: isFirst || isOnly ? 'transparent' : '#d1d5db',
+          }}
+        />
+        {/* Right half of horizontal bar */}
+        <div
+          style={{
+            position: 'absolute', top: 0, left: '50%', right: 0,
+            height: 1, background: isLast || isOnly ? 'transparent' : '#d1d5db',
+          }}
+        />
+        {/* Vertical line down to node */}
+        <div
+          style={{
+            position: 'absolute', top: 0, bottom: 0,
+            left: '50%', marginLeft: -0.5, width: 1, background: '#d1d5db',
+          }}
+        />
+      </div>
+
+      <NodeCard node={node} onAdd={onAdd} onDelete={onDelete} />
+
+      {node.children.length > 0 && (
+        <>
+          {/* Vertical line from node down */}
+          <div style={{ width: 1, height: 28, background: '#d1d5db' }} />
+          {/* Children row */}
+          <div className="flex items-start">
+            {node.children.map((child, i) => (
+              <TreeBranch
+                key={child.id}
+                node={child}
+                onAdd={onAdd}
+                onDelete={onDelete}
+                index={i}
+                total={node.children.length}
+              />
+            ))}
+          </div>
+        </>
+      )}
     </div>
   )
 }
@@ -126,6 +181,7 @@ export default function FamilyTreeClient({ members, userId, userName }: { member
     setParentName(pName)
     setForm({ ...EMPTY_FORM })
     setShowExtra(false)
+    setAddError(null)
     setShowModal(true)
   }
 
@@ -175,36 +231,62 @@ export default function FamilyTreeClient({ members, userId, userName }: { member
 
   return (
     <div>
-      {/* Header actions */}
-      <div className="flex items-center gap-2 mb-4">
-        <Link
-          href="/reference"
-          className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-700 border border-gray-200 rounded-lg px-3 py-1.5 ml-auto"
-        >
-          <BookOpen size={13} /> Indian relationship guide
-        </Link>
-      </div>
+      {/* Tree — horizontally scrollable */}
+      <div className="overflow-x-auto pb-8">
+        <div className="flex flex-col items-center" style={{ minWidth: 'max-content' }}>
 
-      {/* Root — the user */}
-      <div className="flex items-center gap-2 mb-1">
-        <div className="w-4 shrink-0" />
-        <div className="flex-1 flex items-center justify-between border-2 border-gray-900 rounded-xl px-3 py-2 bg-gray-900 text-white">
-          <span className="text-sm font-semibold">{userName} (you)</span>
-          <button
-            onClick={() => openAdd(null, userName)}
-            className="flex items-center gap-1 text-xs bg-white text-gray-900 px-2 py-1 rounded-lg font-medium"
-          >
-            <Plus size={12} /> Add relative
-          </button>
+          {/* Root node — the user */}
+          <div className="border-2 border-gray-900 rounded-xl bg-gray-900 text-white px-4 py-2.5 w-40 text-center">
+            <p className="text-sm font-semibold truncate">{userName}</p>
+            <p className="text-xs text-gray-400 mt-0.5">You</p>
+          </div>
+
+          {tree.length === 0 ? (
+            <div className="flex flex-col items-center mt-0">
+              <div style={{ width: 1, height: 28, background: '#d1d5db' }} />
+              <button
+                onClick={() => openAdd(null, userName)}
+                className="border border-dashed border-gray-300 rounded-xl px-4 py-3 text-xs text-gray-400 hover:border-gray-500 hover:text-gray-600 transition-colors flex items-center gap-1.5"
+              >
+                <Plus size={13} /> Add first relative
+              </button>
+            </div>
+          ) : (
+            <>
+              {/* Vertical line from root down */}
+              <div style={{ width: 1, height: 28, background: '#d1d5db' }} />
+
+              {/* Top-level members */}
+              <div className="flex items-start">
+                {tree.map((node, i) => (
+                  <TreeBranch
+                    key={node.id}
+                    node={node}
+                    onAdd={openAdd}
+                    onDelete={handleDelete}
+                    index={i}
+                    total={tree.length}
+                  />
+                ))}
+              </div>
+
+              {/* Add more button */}
+              <div className="mt-6">
+                <button
+                  onClick={() => openAdd(null, userName)}
+                  className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-700 border border-gray-200 rounded-lg px-3 py-1.5 transition-colors"
+                >
+                  <Plus size={12} /> Add relative of {userName}
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </div>
 
-      {tree.length === 0 ? (
-        <p className="ml-10 mt-3 text-sm text-gray-400">No family members yet. Click "Add relative" to start.</p>
-      ) : (
-        tree.map(node => (
-          <TreeNodeView key={node.id} node={node} onAdd={openAdd} onDelete={handleDelete} depth={1} />
-        ))
+      {/* Tap hint */}
+      {tree.length > 0 && (
+        <p className="text-center text-xs text-gray-300 -mt-4 mb-4">Tap a person to add or remove</p>
       )}
 
       {/* Modal */}
@@ -219,7 +301,6 @@ export default function FamilyTreeClient({ members, userId, userName }: { member
 
               <form onSubmit={handleAdd} className="flex flex-col gap-3">
 
-                {/* Basic details */}
                 <input
                   placeholder="Their name *"
                   required
@@ -269,7 +350,6 @@ export default function FamilyTreeClient({ members, userId, userName }: { member
 
                   {form.use_indian ? (
                     <>
-                      {/* Category tabs */}
                       <div className="flex gap-1 flex-wrap mb-2">
                         {RELATIONSHIP_CATEGORIES.map(cat => (
                           <button
@@ -284,7 +364,6 @@ export default function FamilyTreeClient({ members, userId, userName }: { member
                           </button>
                         ))}
                       </div>
-                      {/* Relationships in category */}
                       <div className="flex flex-wrap gap-1 mb-2">
                         {categoryRelationships.map(r => {
                           const label = `${r.hindi} — ${r.english}`
@@ -344,14 +423,14 @@ export default function FamilyTreeClient({ members, userId, userName }: { member
                   </div>
                 )}
 
-                {/* Extra details toggle */}
+                {/* Extra details */}
                 <button
                   type="button"
                   onClick={() => setShowExtra(e => !e)}
                   className="text-xs text-gray-400 hover:text-gray-700 text-left flex items-center gap-1"
                 >
                   {showExtra ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                  {showExtra ? 'Hide' : 'Add'} extra details (location, profession, education, notes)
+                  {showExtra ? 'Hide' : 'Add'} extra details
                 </button>
 
                 {showExtra && (
@@ -389,7 +468,7 @@ export default function FamilyTreeClient({ members, userId, userName }: { member
                       className="border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-gray-400"
                     />
                     <textarea
-                      placeholder="Notes (anything else you want to remember)"
+                      placeholder="Notes"
                       value={form.notes}
                       onChange={e => set('notes', e.target.value)}
                       rows={2}
@@ -409,7 +488,7 @@ export default function FamilyTreeClient({ members, userId, userName }: { member
                     disabled={!form.name || !selectedRelationship || isPending}
                     className="flex-1 py-2.5 bg-gray-900 text-white rounded-lg text-sm disabled:opacity-50"
                   >
-                    Add
+                    {isPending ? 'Adding...' : 'Add'}
                   </button>
                 </div>
               </form>
