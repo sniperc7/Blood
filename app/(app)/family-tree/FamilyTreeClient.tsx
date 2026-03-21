@@ -211,9 +211,16 @@ function ProfileModal({
             <button onClick={() => { onAdd(member.id, member.name); onClose() }} className="flex-1 flex items-center justify-center gap-1.5 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-600 hover:border-gray-400 transition-colors">
               <Plus size={14} /> Add their relative
             </button>
-            <button onClick={() => { onDelete(member.id); onClose() }} className="flex items-center justify-center px-4 py-2.5 border border-red-100 rounded-xl text-sm text-red-400 hover:bg-red-50 transition-colors">
-              <Trash2 size={14} />
-            </button>
+            {member.user_id ? (
+              <div className="flex flex-col items-center justify-center px-3 py-2 border border-gray-100 rounded-xl" title="Verified users can't be removed">
+                <span className="text-[10px] text-red-400">🩸</span>
+                <span className="text-[9px] text-gray-300 mt-0.5">verified</span>
+              </div>
+            ) : (
+              <button onClick={() => { onDelete(member.id); onClose() }} className="flex items-center justify-center px-4 py-2.5 border border-red-100 rounded-xl text-sm text-red-400 hover:bg-red-50 transition-colors">
+                <Trash2 size={14} />
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -231,16 +238,21 @@ function Row({ label, value }: { label: string; value: string }) {
 }
 
 function MemberCard({ member, onTap }: { member: Member; onTap: (m: Member) => void }) {
+  const verified = !!member.user_id
   return (
     <div
       onClick={() => onTap(member)}
-      className="border border-gray-200 rounded-xl bg-white px-3 py-2.5 text-center cursor-pointer hover:border-gray-400 active:bg-gray-50 transition-colors select-none"
+      className={`border rounded-xl bg-white px-3 py-2.5 text-center cursor-pointer active:bg-gray-50 transition-colors select-none ${verified ? 'border-red-200 hover:border-red-400' : 'border-gray-200 hover:border-gray-400'}`}
       style={{ minWidth: 120, maxWidth: 144 }}
     >
       <p className="text-sm font-semibold text-gray-900 truncate">{member.name}</p>
       <p className="text-xs text-gray-400 truncate mt-0.5">{member.relationship_label}</p>
       {member.location_city && <p className="text-xs text-gray-300 truncate">{member.location_city}</p>}
-      {member.user_id && <span className="inline-block mt-1 text-[10px] bg-green-50 text-green-600 px-1.5 py-0.5 rounded-full">on blood</span>}
+      {verified && (
+        <span className="inline-flex items-center gap-0.5 mt-1 text-[10px] text-red-600 font-medium">
+          🩸 verified
+        </span>
+      )}
     </div>
   )
 }
