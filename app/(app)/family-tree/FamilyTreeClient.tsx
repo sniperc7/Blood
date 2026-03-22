@@ -23,7 +23,7 @@ interface Member {
   parent_member_id: string | null
 }
 
-// ── Generation steps ──────────────────────────────────────────────────────────
+// ── Generation logic ──────────────────────────────────────────────────────────
 
 const GEN_STEP: Record<string, number> = {
   'Father': 1, 'Mother': 1,
@@ -46,67 +46,49 @@ const GEN_STEP: Record<string, number> = {
 }
 
 function getGenStep(rel: string): number {
-  if (rel.includes(' — ')) {
-    const word = rel.split(' — ')[0].trim().split(' ')[0]
-    return GEN_STEP[word] ?? 0
-  }
-  if (rel.includes("'s ")) {
-    return rel.split("'s ").reduce((sum, step) => sum + (GEN_STEP[step.trim()] ?? 0), 0)
-  }
+  if (rel.includes(' — ')) return GEN_STEP[rel.split(' — ')[0].trim().split(' ')[0]] ?? 0
+  if (rel.includes("'s ")) return rel.split("'s ").reduce((s, step) => s + (GEN_STEP[step.trim()] ?? 0), 0)
   return GEN_STEP[rel.trim()] ?? 0
 }
 
 function computeGenerations(members: Member[]): Map<string, number> {
   const memo = new Map<string, number>()
-  const memberMap = new Map(members.map(m => [m.id, m]))
+  const mm = new Map(members.map(m => [m.id, m]))
   function compute(id: string, depth = 0): number {
     if (memo.has(id)) return memo.get(id)!
     if (depth > 20) return 0
-    const m = memberMap.get(id)
+    const m = mm.get(id)
     if (!m) return 0
     const step = getGenStep(m.relationship_label)
     if (!m.parent_member_id) { memo.set(id, step); return step }
-    const parentGen = compute(m.parent_member_id, depth + 1)
-    const gen = parentGen + step
-    memo.set(id, gen); return gen
+    const g = compute(m.parent_member_id, depth + 1) + step
+    memo.set(id, g); return g
   }
   for (const m of members) compute(m.id)
   return memo
 }
 
-// ── Tree parent inference ─────────────────────────────────────────────────────
-
-function getTreeParentId(
-  m: Member,
-  allMembers: Member[],
-  genMap: Map<string, number>,
-): string | null {
+function getTreeParentId(m: Member, all: Member[], genMap: Map<string, number>): string | null {
   if (m.parent_member_id) return m.parent_member_id
   const myGen = genMap.get(m.id) ?? 0
   const base = m.relationship_label.split("'s ")[0]
-  for (const other of allMembers) {
+  for (const other of all) {
     if (other.id === m.id) continue
     const otherGen = genMap.get(other.id) ?? 0
     if (otherGen !== myGen + 1) continue
-    const otherParts = other.relationship_label.split("'s ")
-    if (otherParts[0] === base && otherParts.length > 1) return other.id
+    const parts = other.relationship_label.split("'s ")
+    if (parts[0] === base && parts.length > 1) return other.id
   }
   return null
 }
 
-function findImpliedParent(m: Member, allMembers: Member[]): Member | null {
-  if (m.parent_member_id) return allMembers.find(x => x.id === m.parent_member_id) ?? null
+function findImpliedParent(m: Member, all: Member[]): Member | null {
+  if (m.parent_member_id) return all.find(x => x.id === m.parent_member_id) ?? null
   const label = m.relationship_label
   if (!label.includes("'s ")) return null
-  const parts = label.split("'s ")
-  const parentLabel = parts.slice(0, -1).join("'s ")
-  return allMembers.find(x =>
-    x.relationship_label === parentLabel ||
-    x.relationship_label.startsWith(parentLabel + ' —')
-  ) ?? null
+  const parentLabel = label.split("'s ").slice(0, -1).join("'s ")
+  return all.find(x => x.relationship_label === parentLabel || x.relationship_label.startsWith(parentLabel + ' —')) ?? null
 }
-
-// ── Spouse pairing ────────────────────────────────────────────────────────────
 
 const SPOUSE_MAP: Record<string, string> = {
   'Father': 'Mother', 'Mother': 'Father',
@@ -118,15 +100,15 @@ const SPOUSE_MAP: Record<string, string> = {
 }
 
 function firstWord(rel: string) { return rel.split(/[\s'—]/)[0].trim() }
-function isSpousePair(a: Member, b: Member): boolean {
+function isSpousePair(a: Member, b: Member) {
   const ar = firstWord(a.relationship_label), br = firstWord(b.relationship_label)
   return SPOUSE_MAP[ar] === br || SPOUSE_MAP[br] === ar
 }
-function isUserParentHead(h: Member): boolean {
+function isUserParentHead(h: Member) {
   return ['Father', 'Mother', 'Papa', 'Maa', 'Pita', 'Mata'].includes(firstWord(h.relationship_label))
 }
 
-// ── Family unit structure ─────────────────────────────────────────────────────
+// ── Family unit tree ──────────────────────────────────────────────────────────
 
 interface FamilyUnit {
   id: string
@@ -138,398 +120,291 @@ interface FamilyUnit {
 }
 
 function buildFamilyUnits(members: Member[], genMap: Map<string, number>): FamilyUnit[] {
-  if (members.length === 0) return []
+  if (!members.length) return []
+  const tpMap = new Map<string, string | null>()
+  for (const m of members) tpMap.set(m.id, getTreeParentId(m, members, genMap))
 
-  const treeParentId = new Map<string, string | null>()
-  for (const m of members) {
-    treeParentId.set(m.id, getTreeParentId(m, members, genMap))
-  }
-
-  const topLevel = members.filter(m => treeParentId.get(m.id) === null)
+  const topLevel = members.filter(m => tpMap.get(m.id) === null)
   const byGen = new Map<number, Member[]>()
   for (const m of topLevel) {
     const g = genMap.get(m.id) ?? 0
     if (!byGen.has(g)) byGen.set(g, [])
     byGen.get(g)!.push(m)
   }
-
   const allGens = [...byGen.keys()]
-  if (allGens.length === 0) return []
+  if (!allGens.length) return []
   const topGen = Math.max(...allGens)
-
   const used = new Set<string>()
 
-  function getChildMembers(heads: Member[]): Member[] {
-    const headIds = new Set(heads.map(h => h.id))
-    return members.filter(m => {
-      if (used.has(m.id)) return false
-      const tp = treeParentId.get(m.id)
-      return tp != null && headIds.has(tp)
-    })
+  function getChildMembers(heads: Member[]) {
+    const ids = new Set(heads.map(h => h.id))
+    return members.filter(m => !used.has(m.id) && tpMap.get(m.id) != null && ids.has(tpMap.get(m.id)!))
   }
 
-  function buildUnit(head: Member, partnerArg: Member | null, colorIdx: number): FamilyUnit {
+  function buildUnit(head: Member, pArg: Member | null, ci: number): FamilyUnit {
     used.add(head.id)
-    let partner = partnerArg
+    let partner = pArg
     if (!partner) {
       const myGen = genMap.get(head.id) ?? 0
-      partner = members.find(m =>
-        !used.has(m.id) && isSpousePair(head, m) && (genMap.get(m.id) ?? 0) === myGen
-      ) ?? null
+      partner = members.find(m => !used.has(m.id) && isSpousePair(head, m) && (genMap.get(m.id) ?? 0) === myGen) ?? null
       if (partner) used.add(partner.id)
     }
     const heads = partner ? [head, partner] : [head]
-    const isParentUnit = heads.some(isUserParentHead)
-
-    let rawChildren = getChildMembers(heads)
-    if (isParentUnit) {
-      const gen0Orphans = members.filter(m =>
-        !used.has(m.id) &&
-        treeParentId.get(m.id) === null &&
-        (genMap.get(m.id) ?? 0) === 0
-      )
-      const existing = new Set(rawChildren.map(c => c.id))
-      rawChildren = [...rawChildren, ...gen0Orphans.filter(m => !existing.has(m.id))]
+    const isParent = heads.some(isUserParentHead)
+    let raw = getChildMembers(heads)
+    if (isParent) {
+      const orphans = members.filter(m => !used.has(m.id) && tpMap.get(m.id) === null && (genMap.get(m.id) ?? 0) === 0)
+      const ex = new Set(raw.map(c => c.id))
+      raw = [...raw, ...orphans.filter(m => !ex.has(m.id))]
     }
-
     const childUnits: FamilyUnit[] = []
     const leafChildren: Member[] = []
-    // Each sub-unit gets its own distinct color (incrementing from colorIdx)
-    let subColor = colorIdx + 1
-
-    for (const child of rawChildren) {
+    let sc = ci + 1
+    for (const child of raw) {
       if (used.has(child.id)) continue
-      const childGen = genMap.get(child.id) ?? 0
-      const childSpouse = rawChildren.find(m =>
-        !used.has(m.id) && m.id !== child.id &&
-        isSpousePair(child, m) && (genMap.get(m.id) ?? 0) === childGen
-      ) ?? null
+      const cg = genMap.get(child.id) ?? 0
+      const sp = raw.find(m => !used.has(m.id) && m.id !== child.id && isSpousePair(child, m) && (genMap.get(m.id) ?? 0) === cg) ?? null
       used.add(child.id)
-      if (childSpouse) used.add(childSpouse.id)
-
-      const childHeads = childSpouse ? [child, childSpouse] : [child]
-      const grandchildren = getChildMembers(childHeads)
-      const childIsParent = childHeads.some(isUserParentHead)
-
-      if (grandchildren.length > 0 || childIsParent) {
-        childUnits.push(buildUnit(child, childSpouse, subColor++))
+      if (sp) used.add(sp.id)
+      const cHeads = sp ? [child, sp] : [child]
+      const gc = getChildMembers(cHeads)
+      if (gc.length > 0 || cHeads.some(isUserParentHead)) {
+        childUnits.push(buildUnit(child, sp, sc++))
       } else {
         leafChildren.push(child)
-        if (childSpouse) leafChildren.push(childSpouse)
+        if (sp) leafChildren.push(sp)
       }
     }
-
-    return {
-      id: heads.map(h => h.id).join('-'),
-      heads,
-      children: childUnits,
-      leafChildren,
-      isUserParentUnit: isParentUnit,
-      colorIndex: colorIdx,
-    }
+    return { id: heads.map(h => h.id).join('-'), heads, children: childUnits, leafChildren, isUserParentUnit: isParent, colorIndex: ci }
   }
 
-  const topMembers = topGen > 0 ? (byGen.get(topGen) ?? []) : (byGen.get(0) ?? [])
-  const topUnits: FamilyUnit[] = []
-  let colorIdx = 0
+  const topMembers = (byGen.get(topGen > 0 ? topGen : 0) ?? [])
+  const units: FamilyUnit[] = []
+  let ci = 0
   for (const m of topMembers) {
     if (used.has(m.id)) continue
-    const spouse = topMembers.find(x => !used.has(x.id) && x.id !== m.id && isSpousePair(m, x)) ?? null
-    if (spouse) used.add(spouse.id)
+    const sp = topMembers.find(x => !used.has(x.id) && x.id !== m.id && isSpousePair(m, x)) ?? null
+    if (sp) used.add(sp.id)
     used.add(m.id)
-    topUnits.push(buildUnit(m, spouse, colorIdx++))
+    units.push(buildUnit(m, sp, ci++))
   }
-  return topUnits
+  return units
 }
 
-// ── Sunburst layout ───────────────────────────────────────────────────────────
+// ── Radial layout: node-based (pills, not arcs) ───────────────────────────────
+// innermost ring = oldest generation, outermost = youngest
 
-// Layout: innermost ring = oldest generation (grandparents)
-//         outermost ring = youngest generation (you, siblings, children)
-// Each top-level family branch = a pizza slice sector
-
-interface SunburstSegment {
-  id: string
-  member: Member | null
+interface Pill {
+  id: string          // unit.id or member.id or '__you__'
+  x: number           // center x
+  y: number           // center y
+  midAngle: number    // angle on ring (for rotating couple pills tangentially)
+  isCouple: boolean
+  name1: string       // first name (or left of couple)
+  name2?: string      // right of couple
+  rel1: string        // relationship label for name1 (or empty for couple)
+  rel2?: string
+  colorIndex: number  // -1 = You
   isUser: boolean
-  startAngle: number
-  endAngle: number
-  innerR: number
-  outerR: number
-  colorIndex: number  // -1 = You (dark)
+  memberIds: string[] // which member(s) to open on tap
 }
 
-function polar(cx: number, cy: number, r: number, a: number) {
-  return { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) }
+interface PillEdge {
+  x1: number; y1: number; x2: number; y2: number
+  colorIndex: number
 }
 
-function arcPath(cx: number, cy: number, iR: number, oR: number, a0: number, a1: number): string {
-  if (a1 - a0 >= 2 * Math.PI - 0.001) {
-    // Full circle: use two semicircles
-    const mid = a0 + Math.PI
-    const o1 = polar(cx, cy, oR, a0)
-    const o2 = polar(cx, cy, oR, mid)
-    const i1 = polar(cx, cy, iR, mid)
-    const i2 = polar(cx, cy, iR, a0)
-    return `M ${o1.x} ${o1.y} A ${oR} ${oR} 0 1 1 ${o2.x} ${o2.y} A ${oR} ${oR} 0 1 1 ${o1.x} ${o1.y} M ${i1.x} ${i1.y} A ${iR} ${iR} 0 1 0 ${i2.x} ${i2.y} A ${iR} ${iR} 0 1 0 ${i1.x} ${i1.y} Z`
-  }
-  const p1 = polar(cx, cy, oR, a0)
-  const p2 = polar(cx, cy, oR, a1)
-  const p3 = polar(cx, cy, iR, a1)
-  const p4 = polar(cx, cy, iR, a0)
-  const large = a1 - a0 > Math.PI ? 1 : 0
-  return `M ${p1.x} ${p1.y} A ${oR} ${oR} 0 ${large} 1 ${p2.x} ${p2.y} L ${p3.x} ${p3.y} A ${iR} ${iR} 0 ${large} 0 ${p4.x} ${p4.y} Z`
-}
-
-// Color palette: each family branch gets one hue, same hue across all its rings
-// hsl values — sat/lightness adjusted per the palette
-const PALETTE: Array<[number, number, number]> = [
-  // [h, s, l]
-  [351, 80, 88],  // rose
-  [38, 90, 86],   // amber
-  [200, 80, 87],  // sky
-  [152, 65, 86],  // emerald
-  [262, 65, 88],  // violet
-  [22, 85, 87],   // orange
-  [172, 65, 86],  // teal
-  [328, 70, 88],  // pink
-]
-
-function segmentFill(colorIndex: number): string {
-  if (colorIndex < 0) return '#111827'
-  const [h, s, l] = PALETTE[colorIndex % PALETTE.length]
-  return `hsl(${h}, ${s}%, ${l}%)`
-}
-
-function segmentStroke(colorIndex: number): string {
-  if (colorIndex < 0) return '#374151'
-  const [h, s, l] = PALETTE[colorIndex % PALETTE.length]
-  return `hsl(${h}, ${s}%, ${Math.max(l - 20, 40)}%)`
-}
-
-function computeSunburst(
+function computePillLayout(
   units: FamilyUnit[],
   genMap: Map<string, number>,
-  cx: number,
-  cy: number,
-  innerPad: number,
-  ringWidth: number,
-  topGen: number,
-): SunburstSegment[] {
-  const segs: SunburstSegment[] = []
+  cx: number, cy: number,
+  innerPad: number, ringWidth: number, topGen: number,
+  userName: string,
+): { pills: Pill[], edges: PillEdge[] } {
+  const pills: Pill[] = []
+  const edges: PillEdge[] = []
+  const unitXY = new Map<string, { x: number; y: number }>()
 
-  // Ring index: 0 = innermost (oldest gen), increases outward (newer gen)
-  // ring index for gen G = topGen - G
-  function rInner(gen: number): number {
+  // Ring radius for a generation: older gen → smaller radius (inner), younger → larger (outer)
+  function r(gen: number) {
     return innerPad + (topGen - gen) * ringWidth
   }
-  function rOuter(gen: number): number {
-    return rInner(gen) + ringWidth
+
+  function leafCount(u: FamilyUnit): number {
+    return Math.max(1, (u.isUserParentUnit ? 1 : 0) + u.leafChildren.length + u.children.reduce((s, c) => s + leafCount(c), 0))
   }
 
-  function leafCount(unit: FamilyUnit): number {
-    return Math.max(1,
-      (unit.isUserParentUnit ? 1 : 0) +
-      unit.leafChildren.length +
-      unit.children.reduce((s, c) => s + leafCount(c), 0)
-    )
-  }
-
-  const GAP_RAD = 0.018 // tiny gap between adjacent segments
-
-  function placeUnit(unit: FamilyUnit, start: number, span: number) {
-    const g = GAP_RAD / 2
-    const s0 = start + g
-    const s1 = start + span - g
-    if (s1 <= s0) return
-    const mid = (s0 + s1) / 2
+  function place(unit: FamilyUnit, start: number, span: number) {
+    const mid = start + span / 2
     const gen = genMap.get(unit.heads[0].id) ?? 1
+    const ux = cx + r(gen) * Math.cos(mid)
+    const uy = cy + r(gen) * Math.sin(mid)
+    unitXY.set(unit.id, { x: ux, y: uy })
 
-    // Place heads
-    const numHeads = unit.heads.length
-    const headSpan = (s1 - s0) / numHeads
-    for (let i = 0; i < numHeads; i++) {
-      segs.push({
-        id: unit.heads[i].id,
-        member: unit.heads[i],
-        isUser: false,
-        startAngle: s0 + i * headSpan,
-        endAngle: s0 + (i + 1) * headSpan,
-        innerR: rInner(gen),
-        outerR: rOuter(gen),
+    if (unit.heads.length === 2) {
+      pills.push({
+        id: unit.id,
+        x: ux, y: uy, midAngle: mid, isCouple: true,
+        name1: unit.heads[0].name.split(' ')[0],
+        name2: unit.heads[1].name.split(' ')[0],
+        rel1: unit.heads[0].relationship_label,
+        rel2: unit.heads[1].relationship_label,
         colorIndex: unit.colorIndex,
+        isUser: false,
+        memberIds: unit.heads.map(h => h.id),
+      })
+    } else {
+      pills.push({
+        id: unit.id,
+        x: ux, y: uy, midAngle: mid, isCouple: false,
+        name1: unit.heads[0].name.split(' ')[0],
+        rel1: unit.heads[0].relationship_label,
+        colorIndex: unit.colorIndex,
+        isUser: false,
+        memberIds: [unit.heads[0].id],
       })
     }
 
-    // Distribute children in the outer ring
-    type ChildItem = { isYou: boolean; member?: Member; unit?: FamilyUnit; leaves: number }
-    const items: ChildItem[] = [
+    type CI = { isYou: boolean; member?: Member; unit?: FamilyUnit; leaves: number }
+    const items: CI[] = [
       ...(unit.isUserParentUnit ? [{ isYou: true, leaves: 1 }] : []),
       ...unit.leafChildren.map(m => ({ isYou: false, member: m, leaves: 1 })),
       ...unit.children.map(c => ({ isYou: false, unit: c, leaves: leafCount(c) })),
     ]
-    if (items.length === 0) return
+    if (!items.length) return
 
-    const total = items.reduce((s, x) => s + x.leaves, 0)
-    let childAngle = s0
+    const total = items.reduce((s, c) => s + c.leaves, 0)
+    let ca = start
 
     for (const item of items) {
-      const ispan = (s1 - s0) * (item.leaves / total)
-      const ig = GAP_RAD / 2
-      const ia = childAngle + ig
-      const ib = childAngle + ispan - ig
+      const ispan = span * (item.leaves / total)
+      const imid = ca + ispan / 2
 
       if (item.isYou) {
-        segs.push({
+        const yr = r(0)
+        const yx = cx + yr * Math.cos(imid)
+        const yy = cy + yr * Math.sin(imid)
+        pills.push({
           id: '__you__',
-          member: null,
-          isUser: true,
-          startAngle: ia,
-          endAngle: Math.max(ib, ia + 0.01),
-          innerR: rInner(0),
-          outerR: rOuter(0),
-          colorIndex: -1,
+          x: yx, y: yy, midAngle: imid, isCouple: false,
+          name1: userName.split(' ')[0],
+          rel1: 'You',
+          colorIndex: -1, isUser: true,
+          memberIds: [],
         })
+        edges.push({ x1: ux, y1: uy, x2: yx, y2: yy, colorIndex: unit.colorIndex })
       } else if (item.member) {
-        const childGen = genMap.get(item.member.id) ?? 0
-        segs.push({
+        const cgen = genMap.get(item.member.id) ?? 0
+        const cr = r(cgen)
+        const cx2 = cx + cr * Math.cos(imid)
+        const cy2 = cy + cr * Math.sin(imid)
+        pills.push({
           id: item.member.id,
-          member: item.member,
-          isUser: false,
-          startAngle: ia,
-          endAngle: Math.max(ib, ia + 0.01),
-          innerR: rInner(childGen),
-          outerR: rOuter(childGen),
-          colorIndex: unit.colorIndex,
+          x: cx2, y: cy2, midAngle: imid, isCouple: false,
+          name1: item.member.name.split(' ')[0],
+          rel1: item.member.relationship_label,
+          colorIndex: unit.colorIndex, isUser: false,
+          memberIds: [item.member.id],
         })
+        edges.push({ x1: ux, y1: uy, x2: cx2, y2: cy2, colorIndex: unit.colorIndex })
       } else if (item.unit) {
-        placeUnit(item.unit, childAngle, ispan)
+        place(item.unit, ca, ispan)
+        const cc = unitXY.get(item.unit.id)
+        if (cc) edges.push({ x1: ux, y1: uy, x2: cc.x, y2: cc.y, colorIndex: item.unit.colorIndex })
       }
-      childAngle += ispan
+      ca += ispan
     }
   }
 
-  const totalLeaves = units.reduce((s, u) => s + leafCount(u), 0)
+  const total = units.reduce((s, u) => s + leafCount(u), 0)
   let angle = -Math.PI / 2
-
   for (const unit of units) {
-    const span = (leafCount(unit) / totalLeaves) * 2 * Math.PI
-    placeUnit(unit, angle, span)
+    const span = (leafCount(unit) / total) * 2 * Math.PI
+    place(unit, angle, span)
     angle += span
   }
 
-  return segs
+  return { pills, edges }
 }
 
-// ── Sunburst SVG view ─────────────────────────────────────────────────────────
+// ── SVG Pill node ─────────────────────────────────────────────────────────────
 
-function SunburstView({
-  segments,
-  cx,
-  cy,
-  innerPad,
-  userName,
-  onTap,
-}: {
-  segments: SunburstSegment[]
-  cx: number
-  cy: number
-  innerPad: number
-  userName: string
-  onTap: (id: string) => void
-}) {
+// Color palette: [h, s, lightFill, darkBorder]
+const PILL_COLORS: Array<[number, number]> = [
+  [351, 80],   // rose
+  [38, 90],    // amber
+  [200, 80],   // sky
+  [152, 65],   // emerald
+  [262, 65],   // violet
+  [22, 85],    // orange
+  [172, 65],   // teal
+  [328, 70],   // pink
+]
+
+function pillFill(ci: number): string {
+  if (ci < 0) return '#111827'
+  const [h, s] = PILL_COLORS[ci % PILL_COLORS.length]
+  return `hsl(${h},${s}%,92%)`
+}
+function pillStroke(ci: number): string {
+  if (ci < 0) return '#374151'
+  const [h, s] = PILL_COLORS[ci % PILL_COLORS.length]
+  return `hsl(${h},${s}%,68%)`
+}
+function pillText(ci: number): string { return ci < 0 ? '#ffffff' : '#111827' }
+function pillSub(ci: number): string { return ci < 0 ? 'rgba(255,255,255,0.6)' : '#6b7280' }
+
+function PillNode({ pill, onTap }: { pill: Pill; onTap: (ids: string[]) => void }) {
+  const deg = (pill.midAngle * 180) / Math.PI + 90
+
+  if (pill.isCouple) {
+    // Tangentially-oriented couple pill: rotated so width follows ring curve
+    const W = 130, H = 34, R = H / 2
+    const fill = pillFill(pill.colorIndex)
+    const stroke = pillStroke(pill.colorIndex)
+    const tf = pillText(pill.colorIndex)
+    const sf = pillSub(pill.colorIndex)
+    return (
+      <g transform={`translate(${pill.x},${pill.y}) rotate(${deg})`} style={{ cursor: 'pointer' }}>
+        {/* Bubble background */}
+        <rect x={-W / 2} y={-H / 2} width={W} height={H} rx={R} fill={fill} stroke={stroke} strokeWidth="1.5" />
+        {/* Soft divider */}
+        <line x1="0" y1={-H / 2 + 5} x2="0" y2={H / 2 - 5} stroke={stroke} strokeWidth="1" />
+        {/* Name 1 */}
+        <text x={-W / 4} y="-3" textAnchor="middle" fontSize="9.5" fontWeight="600" fill={tf} style={{ fontFamily: 'inherit', userSelect: 'none' }}>{pill.name1}</text>
+        <text x={-W / 4} y="8" textAnchor="middle" fontSize="7" fill={sf} style={{ fontFamily: 'inherit', userSelect: 'none' }}>{pill.rel1}</text>
+        {/* Name 2 */}
+        <text x={W / 4} y="-3" textAnchor="middle" fontSize="9.5" fontWeight="600" fill={tf} style={{ fontFamily: 'inherit', userSelect: 'none' }}>{pill.name2}</text>
+        <text x={W / 4} y="8" textAnchor="middle" fontSize="7" fill={sf} style={{ fontFamily: 'inherit', userSelect: 'none' }}>{pill.rel2}</text>
+        {/* Hit areas for each half */}
+        <rect x={-W / 2} y={-H / 2} width={W / 2} height={H} rx={R} fill="transparent"
+          onClick={() => onTap([pill.memberIds[0]])} />
+        <rect x="0" y={-H / 2} width={W / 2} height={H} rx={R} fill="transparent"
+          onClick={() => onTap([pill.memberIds[1]])} />
+      </g>
+    )
+  }
+
+  // Single pill — no rotation, always horizontal
+  const isYou = pill.isUser
+  const W = isYou ? 88 : 78, H = 36, R = H / 2
   return (
-    <>
-      {/* Ring segments */}
-      {segments.map(seg => {
-        const fill = segmentFill(seg.colorIndex)
-        const stroke = segmentStroke(seg.colorIndex)
-        const midAngle = (seg.startAngle + seg.endAngle) / 2
-        const midR = (seg.innerR + seg.outerR) / 2
-        const arcLen = (seg.endAngle - seg.startAngle) * midR
-        const showLabel = arcLen > 48
-
-        // Short first name for small arcs, full first name for larger
-        const displayName = seg.member
-          ? (arcLen > 72 ? seg.member.name.split(' ')[0] : seg.member.name.split(' ')[0].slice(0, 5))
-          : 'You'
-        const relLabel = seg.member
-          ? firstWord(seg.member.relationship_label)
-          : ''
-
-        // Text rotation: align radially outward
-        const textDeg = (midAngle * 180) / Math.PI + 90
-        const tx = cx + midR * Math.cos(midAngle)
-        const ty = cy + midR * Math.sin(midAngle)
-
-        return (
-          <g
-            key={seg.id}
-            onClick={() => onTap(seg.id)}
-            style={{ cursor: 'pointer' }}
-            role="button"
-          >
-            <path
-              d={arcPath(cx, cy, seg.innerR, seg.outerR, seg.startAngle, seg.endAngle)}
-              fill={fill}
-              stroke="white"
-              strokeWidth="2"
-            />
-            {showLabel && (
-              <g transform={`translate(${tx}, ${ty}) rotate(${textDeg})`}>
-                <text
-                  textAnchor="middle"
-                  dominantBaseline="central"
-                  dy={relLabel ? '-4' : '0'}
-                  fontSize="10"
-                  fontWeight="600"
-                  fill={seg.isUser ? '#ffffff' : '#1f2937'}
-                  style={{ fontFamily: 'inherit', userSelect: 'none' }}
-                >
-                  {displayName}
-                </text>
-                {relLabel && (
-                  <text
-                    textAnchor="middle"
-                    dominantBaseline="central"
-                    dy="7"
-                    fontSize="7.5"
-                    fill={seg.isUser ? 'rgba(255,255,255,0.75)' : '#6b7280'}
-                    style={{ fontFamily: 'inherit', userSelect: 'none' }}
-                  >
-                    {relLabel}
-                  </text>
-                )}
-              </g>
-            )}
-          </g>
-        )
-      })}
-
-      {/* Center hub */}
-      <circle cx={cx} cy={cy} r={innerPad} fill="#111827" />
-      <text
-        x={cx} y={cy - 4}
-        textAnchor="middle"
-        dominantBaseline="central"
-        fontSize="11"
-        fontWeight="700"
-        fill="white"
-        style={{ fontFamily: 'inherit', userSelect: 'none' }}
-      >
-        {userName.split(' ')[0]}
+    <g transform={`translate(${pill.x},${pill.y})`}
+      onClick={() => !isYou && onTap(pill.memberIds)}
+      style={{ cursor: isYou ? 'default' : 'pointer' }}>
+      <rect x={-W / 2} y={-H / 2} width={W} height={H} rx={R}
+        fill={pillFill(pill.colorIndex)}
+        stroke={pillStroke(pill.colorIndex)}
+        strokeWidth={isYou ? '2' : '1.5'} />
+      <text x="0" y="-3" textAnchor="middle" fontSize="10" fontWeight="600"
+        fill={pillText(pill.colorIndex)} style={{ fontFamily: 'inherit', userSelect: 'none' }}>
+        {pill.name1}
       </text>
-      <text
-        x={cx} y={cy + 8}
-        textAnchor="middle"
-        dominantBaseline="central"
-        fontSize="7"
-        fill="rgba(255,255,255,0.55)"
-        style={{ fontFamily: 'inherit', userSelect: 'none' }}
-      >
-        You
+      <text x="0" y="9" textAnchor="middle" fontSize="7.5"
+        fill={pillSub(pill.colorIndex)} style={{ fontFamily: 'inherit', userSelect: 'none' }}>
+        {pill.rel1}
       </text>
-    </>
+    </g>
   )
 }
 
@@ -550,7 +425,6 @@ function ProfileModal({ member, allMembers, userName, onClose, onAdd, onDelete }
 }) {
   const impliedParent = findImpliedParent(member, allMembers)
   const parentName = impliedParent ? impliedParent.name : userName
-
   const coMembers = allMembers.filter(m =>
     m.id !== member.id && (
       (m.parent_member_id === member.parent_member_id && m.parent_member_id !== null) ||
@@ -559,10 +433,8 @@ function ProfileModal({ member, allMembers, userName, onClose, onAdd, onDelete }
   )
   const inferred = coMembers.map(m => {
     const ar = firstWord(member.relationship_label), br = firstWord(m.relationship_label)
-    if (SPOUSE_MAP[ar] === br || SPOUSE_MAP[br] === ar) return { label: 'Spouse', name: m.name }
-    return { label: m.relationship_label, name: m.name }
+    return { label: (SPOUSE_MAP[ar] === br || SPOUSE_MAP[br] === ar) ? 'Spouse' : m.relationship_label, name: m.name }
   })
-
   return (
     <div className="fixed inset-0 bg-black/30 flex items-end sm:items-center justify-center z-50" onClick={onClose}>
       <div className="bg-white rounded-t-2xl sm:rounded-2xl w-full max-w-sm max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
@@ -595,10 +467,8 @@ function ProfileModal({ member, allMembers, userName, onClose, onAdd, onDelete }
             {member.notes && <Row label="Notes" value={member.notes} />}
           </div>
           <div className="flex gap-2 mt-5">
-            <button
-              onClick={() => { onAdd(member.id, member.name); onClose() }}
-              className="flex-1 flex items-center justify-center gap-1.5 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-600 hover:border-gray-400 transition-colors"
-            >
+            <button onClick={() => { onAdd(member.id, member.name); onClose() }}
+              className="flex-1 flex items-center justify-center gap-1.5 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-600 hover:border-gray-400 transition-colors">
               <Plus size={14} /> Add their relative
             </button>
             {member.user_id ? (
@@ -607,10 +477,8 @@ function ProfileModal({ member, allMembers, userName, onClose, onAdd, onDelete }
                 <span className="text-[9px] text-gray-300 mt-0.5">verified</span>
               </div>
             ) : (
-              <button
-                onClick={() => { onDelete(member.id); onClose() }}
-                className="flex items-center justify-center px-4 py-2.5 border border-red-100 rounded-xl text-sm text-red-400 hover:bg-red-50 transition-colors"
-              >
+              <button onClick={() => { onDelete(member.id); onClose() }}
+                className="flex items-center justify-center px-4 py-2.5 border border-red-100 rounded-xl text-sm text-red-400 hover:bg-red-50 transition-colors">
                 <Trash2 size={14} />
               </button>
             )}
@@ -621,7 +489,7 @@ function ProfileModal({ member, allMembers, userName, onClose, onAdd, onDelete }
   )
 }
 
-// ── Chain builder data ────────────────────────────────────────────────────────
+// ── Chain builder ─────────────────────────────────────────────────────────────
 
 const CHAIN_STEPS = [
   { label: 'Parents', steps: ['Father', 'Mother'] },
@@ -650,14 +518,8 @@ const EMPTY_FORM = {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function FamilyTreeClient({
-  members,
-  userId,
-  userName,
-}: {
-  members: Member[]
-  userId: string
-  userName: string
+export default function FamilyTreeClient({ members, userId, userName }: {
+  members: Member[]; userId: string; userName: string
 }) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
@@ -674,43 +536,34 @@ export default function FamilyTreeClient({
 
   const genMap = computeGenerations(members)
   const familyUnits = buildFamilyUnits(members, genMap)
+  const memberMap = new Map(members.map(m => [m.id, m]))
 
-  // Sunburst dimensions — fits in viewport, no scroll
-  const CANVAS = 380
+  // Layout dimensions — fills viewport, no scroll
+  const CANVAS = 500
   const cx = CANVAS / 2
   const cy = CANVAS / 2
-  const INNER_PAD = 32
   const genVals = [...genMap.values()]
   const topGen = genVals.length > 0 ? Math.max(...genVals) : 1
   const bottomGen = genVals.length > 0 ? Math.min(...genVals) : 0
-  const totalRings = topGen - bottomGen + 1  // rings needed including gen 0
-  const ringWidth = (cx - INNER_PAD - 6) / Math.max(totalRings, 1)
+  const totalRings = topGen - bottomGen + 1
+  const INNER_PAD = 22  // center hole (no label there)
+  const ringWidth = (cx - INNER_PAD - 14) / Math.max(totalRings, 1)
 
-  const segments = familyUnits.length > 0
-    ? computeSunburst(familyUnits, genMap, cx, cy, INNER_PAD, ringWidth, topGen)
-    : []
+  const { pills, edges } = familyUnits.length > 0
+    ? computePillLayout(familyUnits, genMap, cx, cy, INNER_PAD, ringWidth, topGen, userName)
+    : { pills: [], edges: [] }
 
-  const memberMap = new Map(members.map(m => [m.id, m]))
-
-  function setField(field: string, value: string) {
-    setForm(f => ({ ...f, [field]: value }))
-  }
+  function setField(f: string, v: string) { setForm(prev => ({ ...prev, [f]: v })) }
 
   function openAdd(pId: string | null, pName: string) {
-    setParentId(pId)
-    setParentName(pName)
-    setForm({ ...EMPTY_FORM })
-    setChain([])
-    setPickingStep(false)
-    setShowStartPicker(false)
-    setShowExtra(false)
-    setAddError(null)
+    setParentId(pId); setParentName(pName)
+    setForm({ ...EMPTY_FORM }); setChain([]); setPickingStep(false)
+    setShowStartPicker(false); setShowExtra(false); setAddError(null)
     setShowModal(true)
   }
 
-  function handleSegmentTap(id: string) {
-    if (id === '__you__') return
-    const m = memberMap.get(id)
+  function handlePillTap(ids: string[]) {
+    const m = memberMap.get(ids[0])
     if (m) setShowProfile(m)
   }
 
@@ -725,23 +578,16 @@ export default function FamilyTreeClient({
     const supabase = createClient()
     startTransition(async () => {
       const { error } = await supabase.from('family_tree_members').insert({
-        tree_owner_id: userId,
-        name: form.name,
-        email: form.email || null,
-        phone: form.phone || null,
+        tree_owner_id: userId, name: form.name,
+        email: form.email || null, phone: form.phone || null,
         date_of_birth: form.date_of_birth || null,
-        location_city: form.location_city || null,
-        location_country: form.location_country || null,
-        profession: form.profession || null,
-        company: form.company || null,
-        education: form.education || null,
-        notes: form.notes || null,
-        relationship_label: chainLabel,
-        parent_member_id: parentId,
+        location_city: form.location_city || null, location_country: form.location_country || null,
+        profession: form.profession || null, company: form.company || null,
+        education: form.education || null, notes: form.notes || null,
+        relationship_label: chainLabel, parent_member_id: parentId,
       })
       if (error) { setAddError(error.message); return }
-      setShowModal(false)
-      router.refresh()
+      setShowModal(false); router.refresh()
     })
   }
 
@@ -756,42 +602,52 @@ export default function FamilyTreeClient({
   // ── Render ──────────────────────────────────────────────────────────────────
 
   return (
-    <div className="flex flex-col items-center justify-start">
+    <div className="flex flex-col items-center">
 
-      {/* Sunburst SVG — fits screen, no scroll */}
-      <div className="w-full flex justify-center">
-        <svg
-          viewBox={`0 0 ${CANVAS} ${CANVAS}`}
-          style={{ width: '100%', maxWidth: CANVAS, maxHeight: 'calc(100svh - 120px)', height: 'auto' }}
-          aria-label="Family tree"
-        >
-          {members.length === 0 ? (
-            <>
-              {/* Empty state: just show center hub + add prompt */}
-              <circle cx={cx} cy={cy} r={INNER_PAD + ringWidth * 0.8} fill="#f3f4f6" stroke="#e5e7eb" strokeWidth="1.5" strokeDasharray="4 3" />
-              <circle cx={cx} cy={cy} r={INNER_PAD} fill="#111827" />
-              <text x={cx} y={cy - 4} textAnchor="middle" fontSize="11" fontWeight="700" fill="white" style={{ fontFamily: 'inherit' }}>
-                {userName.split(' ')[0]}
-              </text>
-              <text x={cx} y={cy + 8} textAnchor="middle" fontSize="7" fill="rgba(255,255,255,0.55)" style={{ fontFamily: 'inherit' }}>
-                You
-              </text>
-            </>
-          ) : (
-            <SunburstView
-              segments={segments}
-              cx={cx}
-              cy={cy}
-              innerPad={INNER_PAD}
-              userName={userName}
-              onTap={handleSegmentTap}
-            />
-          )}
-        </svg>
-      </div>
+      {/* Tree SVG — scales to fit screen */}
+      <svg
+        viewBox={`0 0 ${CANVAS} ${CANVAS}`}
+        style={{ width: '100%', maxWidth: CANVAS, maxHeight: 'calc(100svh - 130px)', height: 'auto' }}
+      >
+        {/* Ring guides — subtle dashed circles */}
+        {Array.from({ length: totalRings }, (_, i) => {
+          const ringR = INNER_PAD + (i + 0.5) * ringWidth
+          return (
+            <circle key={i} cx={cx} cy={cy} r={ringR}
+              fill="none" stroke="#f1f5f9" strokeWidth="1" strokeDasharray="4 5" />
+          )
+        })}
+
+        {/* Center dot */}
+        <circle cx={cx} cy={cy} r={6} fill="#f1f5f9" />
+
+        {members.length === 0 && (
+          <>
+            <circle cx={cx} cy={cy} r={cx - 20} fill="none" stroke="#f1f5f9" strokeWidth="1" strokeDasharray="4 5" />
+            <text x={cx} y={cy - 10} textAnchor="middle" fontSize="13" fill="#d1d5db" style={{ fontFamily: 'inherit' }}>
+              Add your first relative
+            </text>
+            <text x={cx} y={cy + 10} textAnchor="middle" fontSize="11" fill="#e5e7eb" style={{ fontFamily: 'inherit' }}>
+              to start your family circle
+            </text>
+          </>
+        )}
+
+        {/* Connecting lines */}
+        {edges.map((edge, i) => (
+          <line key={i}
+            x1={edge.x1} y1={edge.y1} x2={edge.x2} y2={edge.y2}
+            stroke="#e2e8f0" strokeWidth="1.5" strokeLinecap="round" />
+        ))}
+
+        {/* Pill nodes */}
+        {pills.map(pill => (
+          <PillNode key={pill.id} pill={pill} onTap={handlePillTap} />
+        ))}
+      </svg>
 
       {/* Add button */}
-      <div className="mt-3 pb-4">
+      <div className="mt-2 pb-4 flex flex-col items-center gap-1">
         <button
           onClick={() => openAdd(null, 'You')}
           className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-700 border border-gray-200 rounded-lg px-3 py-1.5 transition-colors"
@@ -799,19 +655,17 @@ export default function FamilyTreeClient({
           <Plus size={12} /> Add relative
         </button>
         {members.length > 0 && (
-          <p className="text-center text-[10px] text-gray-300 mt-2">Tap a segment to view details</p>
+          <p className="text-[10px] text-gray-300">Tap a name to view · tap couple to view each person</p>
         )}
       </div>
 
       {/* Profile modal */}
       {showProfile && (
         <ProfileModal
-          member={showProfile}
-          allMembers={members}
-          userName={userName}
+          member={showProfile} allMembers={members} userName={userName}
           onClose={() => setShowProfile(null)}
           onAdd={(id, name) => { setShowProfile(null); openAdd(id, name) }}
-          onDelete={(id) => { setShowProfile(null); handleDelete(id) }}
+          onDelete={id => { setShowProfile(null); handleDelete(id) }}
         />
       )}
 
@@ -822,49 +676,31 @@ export default function FamilyTreeClient({
             <div className="p-5">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="font-semibold">Add relative</h2>
-                <button onClick={() => setShowModal(false)} className="text-gray-300 hover:text-gray-600">
-                  <X size={18} />
-                </button>
+                <button onClick={() => setShowModal(false)} className="text-gray-300 hover:text-gray-600"><X size={18} /></button>
               </div>
-
               <form onSubmit={handleAdd} className="flex flex-col gap-4">
-                <input
-                  placeholder="Their name *"
-                  required
-                  value={form.name}
+                <input placeholder="Their name *" required value={form.name}
                   onChange={e => setField('name', e.target.value)}
-                  className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-gray-400"
-                />
+                  className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-gray-400" />
 
-                {/* Relationship */}
                 <div>
                   <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Relationship</p>
                   <div className="mb-3">
                     <p className="text-xs text-gray-400 mb-1">Starting from</p>
-                    <button
-                      type="button"
-                      onClick={() => setShowStartPicker(s => !s)}
-                      className="w-full flex items-center justify-between border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-700 hover:border-gray-400"
-                    >
-                      <span>{parentName}</span>
-                      <ChevronDown size={14} className="text-gray-400" />
+                    <button type="button" onClick={() => setShowStartPicker(s => !s)}
+                      className="w-full flex items-center justify-between border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-700 hover:border-gray-400">
+                      <span>{parentName}</span><ChevronDown size={14} className="text-gray-400" />
                     </button>
                     {showStartPicker && (
                       <div className="border border-gray-200 rounded-lg mt-1 overflow-hidden max-h-40 overflow-y-auto">
-                        <button
-                          type="button"
-                          onClick={() => { setParentId(null); setParentName('You'); setShowStartPicker(false) }}
-                          className={`w-full text-left px-3 py-2 text-sm hover:bg-gray-50 ${parentId === null ? 'font-medium' : ''}`}
-                        >
+                        <button type="button" onClick={() => { setParentId(null); setParentName('You'); setShowStartPicker(false) }}
+                          className={`w-full text-left px-3 py-2 text-sm hover:bg-gray-50 ${parentId === null ? 'font-medium' : ''}`}>
                           You
                         </button>
                         {members.map(m => (
-                          <button
-                            key={m.id}
-                            type="button"
+                          <button key={m.id} type="button"
                             onClick={() => { setParentId(m.id); setParentName(m.name); setShowStartPicker(false); setChain([]) }}
-                            className={`w-full text-left px-3 py-2 text-sm hover:bg-gray-50 border-t border-gray-50 ${parentId === m.id ? 'font-medium' : ''}`}
-                          >
+                            className={`w-full text-left px-3 py-2 text-sm hover:bg-gray-50 border-t border-gray-50 ${parentId === m.id ? 'font-medium' : ''}`}>
                             {m.name} <span className="text-xs text-gray-400 ml-1">{m.relationship_label}</span>
                           </button>
                         ))}
@@ -874,26 +710,19 @@ export default function FamilyTreeClient({
 
                   <p className="text-xs text-gray-400 mb-2">{parentName}'s → build the chain</p>
                   <div className="flex items-center flex-wrap gap-1 mb-2 min-h-[32px]">
-                    {chain.length === 0 && !pickingStep && (
-                      <span className="text-xs text-gray-300 italic">Pick a relationship below</span>
-                    )}
+                    {chain.length === 0 && !pickingStep && <span className="text-xs text-gray-300 italic">Pick a relationship below</span>}
                     {chain.map((step, i) => (
                       <span key={i} className="flex items-center gap-1">
                         {i > 0 && <ArrowRight size={10} className="text-gray-300" />}
                         <span className="bg-gray-900 text-white text-xs px-2.5 py-1 rounded-full">{step}</span>
                       </span>
                     ))}
-                    {chain.length > 0 && (
-                      <button type="button" onClick={() => setChain(c => c.slice(0, -1))} className="text-xs text-gray-400 hover:text-red-400 ml-1">✕</button>
-                    )}
+                    {chain.length > 0 && <button type="button" onClick={() => setChain(c => c.slice(0, -1))} className="text-xs text-gray-400 hover:text-red-400 ml-1">✕</button>}
                   </div>
 
                   {resolved && (
                     <div className="bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 mb-2">
-                      <p className="text-xs text-amber-700">
-                        <span className="font-semibold">{resolved.hindi}</span>
-                        <span className="text-amber-500 ml-1.5">— {resolved.definition}</span>
-                      </p>
+                      <p className="text-xs text-amber-700"><span className="font-semibold">{resolved.hindi}</span><span className="text-amber-500 ml-1.5">— {resolved.definition}</span></p>
                     </div>
                   )}
 
@@ -908,12 +737,8 @@ export default function FamilyTreeClient({
                           <p className="text-[10px] text-gray-400 uppercase tracking-wide mb-1">{group.label}</p>
                           <div className="flex flex-wrap gap-1">
                             {group.steps.map(step => (
-                              <button
-                                key={step}
-                                type="button"
-                                onClick={() => { setChain(c => [...c, step]); setPickingStep(false) }}
-                                className="px-3 py-1.5 rounded-full text-xs border border-gray-200 text-gray-600 hover:bg-gray-900 hover:text-white hover:border-gray-900 transition-colors"
-                              >
+                              <button key={step} type="button" onClick={() => { setChain(c => [...c, step]); setPickingStep(false) }}
+                                className="px-3 py-1.5 rounded-full text-xs border border-gray-200 text-gray-600 hover:bg-gray-900 hover:text-white hover:border-gray-900 transition-colors">
                                 {step}
                               </button>
                             ))}
@@ -922,13 +747,9 @@ export default function FamilyTreeClient({
                       ))}
                     </div>
                   ) : (
-                    <button
-                      type="button"
-                      onClick={() => setPickingStep(true)}
-                      className="flex items-center gap-1.5 text-xs border border-dashed border-gray-300 rounded-lg px-3 py-2 text-gray-500 hover:border-gray-500 w-full justify-center transition-colors"
-                    >
-                      <Plus size={12} />
-                      {chain.length === 0 ? 'Pick first step' : 'Add another step'}
+                    <button type="button" onClick={() => setPickingStep(true)}
+                      className="flex items-center gap-1.5 text-xs border border-dashed border-gray-300 rounded-lg px-3 py-2 text-gray-500 hover:border-gray-500 w-full justify-center transition-colors">
+                      <Plus size={12} />{chain.length === 0 ? 'Pick first step' : 'Add another step'}
                     </button>
                   )}
 
@@ -941,7 +762,6 @@ export default function FamilyTreeClient({
                   )}
                 </div>
 
-                {/* Contact */}
                 <div className="flex flex-col gap-2">
                   <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Contact (optional)</p>
                   <input placeholder="Email" type="email" value={form.email} onChange={e => setField('email', e.target.value)} className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-gray-400" />
@@ -953,10 +773,8 @@ export default function FamilyTreeClient({
                 </div>
 
                 <button type="button" onClick={() => setShowExtra(e => !e)} className="text-xs text-gray-400 hover:text-gray-700 text-left flex items-center gap-1">
-                  {showExtra ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                  {showExtra ? 'Hide' : 'Add'} extra details
+                  {showExtra ? <ChevronDown size={12} /> : <ChevronRight size={12} />}{showExtra ? 'Hide' : 'Add'} extra details
                 </button>
-
                 {showExtra && (
                   <div className="flex flex-col gap-2 border-t border-gray-100 pt-3">
                     <div className="flex gap-2">
@@ -970,10 +788,7 @@ export default function FamilyTreeClient({
                   </div>
                 )}
 
-                {addError && (
-                  <p className="text-xs text-red-500 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{addError}</p>
-                )}
-
+                {addError && <p className="text-xs text-red-500 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{addError}</p>}
                 <div className="flex gap-2 pt-1">
                   <button type="button" onClick={() => setShowModal(false)} className="flex-1 py-2.5 border border-gray-200 rounded-lg text-sm">Cancel</button>
                   <button type="submit" disabled={!canSubmit || isPending} className="flex-1 py-2.5 bg-gray-900 text-white rounded-lg text-sm disabled:opacity-50">
