@@ -71,13 +71,24 @@ function computeGenerations(members: Member[]): Map<string, number> {
 function getTreeParentId(m: Member, all: Member[], genMap: Map<string, number>): string | null {
   if (m.parent_member_id) return m.parent_member_id
   const myGen = genMap.get(m.id) ?? 0
-  const base = m.relationship_label.split("'s ")[0]
+  const chainParts = m.relationship_label.split("'s ")
+  if (chainParts.length < 2) return null  // single-word label has no implied parent
+  const base = chainParts[0]
+  // Priority 1: gen+1 member whose label starts with the same base (e.g. Dada for Father's Brother)
   for (const other of all) {
     if (other.id === m.id) continue
     const otherGen = genMap.get(other.id) ?? 0
     if (otherGen !== myGen + 1) continue
     const parts = other.relationship_label.split("'s ")
     if (parts[0] === base && parts.length > 1) return other.id
+  }
+  // Priority 2: same-gen member whose label IS exactly the base
+  // (e.g. "Mother's Brother" → base "Mother" → link to the Mother member)
+  for (const other of all) {
+    if (other.id === m.id) continue
+    const otherGen = genMap.get(other.id) ?? 0
+    if (otherGen !== myGen) continue
+    if (other.relationship_label === base) return other.id
   }
   return null
 }
@@ -137,9 +148,24 @@ const SPOUSE_MAP: Record<string, string> = {
 }
 
 function firstWord(rel: string) { return rel.split(/[\s'—]/)[0].trim() }
-function isSpousePair(a: Member, b: Member) {
-  const ar = firstWord(a.relationship_label), br = firstWord(b.relationship_label)
-  return SPOUSE_MAP[ar] === br || SPOUSE_MAP[br] === ar
+function isSpousePair(a: Member, b: Member): boolean {
+  const al = a.relationship_label, bl = b.relationship_label
+  // Pattern 1: "X's Wife" / "X's Husband" — e.g. "Mother's Brother" + "Mother's Brother's Wife"
+  if (bl === al + "'s Wife" || bl === al + "'s Husband") return true
+  if (al === bl + "'s Wife" || al === bl + "'s Husband") return true
+  // Pattern 2: Same chain prefix, spouse last words — e.g. "Father's Father" + "Father's Mother"
+  const aparts = al.split("'s "), bparts = bl.split("'s ")
+  if (aparts.length === bparts.length && aparts.length > 1) {
+    const aprefix = aparts.slice(0, -1).join("'s ")
+    const bprefix = bparts.slice(0, -1).join("'s ")
+    if (aprefix === bprefix) {
+      const alast = aparts[aparts.length - 1], blast = bparts[bparts.length - 1]
+      if (SPOUSE_MAP[alast] === blast || SPOUSE_MAP[blast] === alast) return true
+    }
+  }
+  // Pattern 3: Simple single-word spouse pairs
+  const af = firstWord(al), bf = firstWord(bl)
+  return SPOUSE_MAP[af] === bf || SPOUSE_MAP[bf] === af
 }
 function isUserParentHead(h: Member) {
   return ['Father', 'Mother', 'Papa', 'Maa', 'Pita', 'Mata'].includes(h.relationship_label)
