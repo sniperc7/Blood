@@ -90,6 +90,32 @@ function findImpliedParent(m: Member, all: Member[]): Member | null {
   return all.find(x => x.relationship_label === parentLabel || x.relationship_label.startsWith(parentLabel + ' —')) ?? null
 }
 
+// ── Indian name lookup ────────────────────────────────────────────────────────
+
+const ENGLISH_TO_HINDI: Record<string, string> = {
+  // Generic fallbacks for chains without Elder/Younger distinction
+  "Father's Brother": 'Chacha',
+  "Father's Sister": 'Bua',
+  "Mother's Brother": 'Mama',
+  "Mother's Sister": 'Mausi',
+  "Father's Brother's Son": 'Chachera Bhai',
+  "Father's Brother's Daughter": 'Chacheri Behen',
+  "Father's Sister's Son": 'Phuphera Bhai',
+  "Father's Sister's Daughter": 'Phupheri Behen',
+  "Mother's Brother's Son": 'Mamera Bhai',
+  "Mother's Brother's Daughter": 'Mameri Behen',
+  "Mother's Sister's Son": 'Mausera Bhai',
+  "Mother's Sister's Daughter": 'Mauseri Behen',
+  // Exact matches from INDIAN_RELATIONSHIPS (override fallbacks above)
+  ...Object.fromEntries(
+    INDIAN_RELATIONSHIPS.map(r => [r.english, r.hindi.split(' /')[0].split('/')[0].trim()])
+  ),
+}
+
+function toIndianLabel(label: string): string {
+  return ENGLISH_TO_HINDI[label] ?? label
+}
+
 const SPOUSE_MAP: Record<string, string> = {
   'Father': 'Mother', 'Mother': 'Father',
   'Husband': 'Wife', 'Wife': 'Husband',
@@ -105,7 +131,7 @@ function isSpousePair(a: Member, b: Member) {
   return SPOUSE_MAP[ar] === br || SPOUSE_MAP[br] === ar
 }
 function isUserParentHead(h: Member) {
-  return ['Father', 'Mother', 'Papa', 'Maa', 'Pita', 'Mata'].includes(firstWord(h.relationship_label))
+  return ['Father', 'Mother', 'Papa', 'Maa', 'Pita', 'Mata'].includes(h.relationship_label)
 }
 
 // ── Family unit tree ──────────────────────────────────────────────────────────
@@ -220,6 +246,7 @@ function computePillLayout(
   cx: number, cy: number,
   innerPad: number, ringWidth: number, topGen: number,
   userName: string,
+  labelFn: (label: string) => string,
 ): { pills: Pill[], edges: PillEdge[] } {
   const pills: Pill[] = []
   const edges: PillEdge[] = []
@@ -247,8 +274,8 @@ function computePillLayout(
         x: ux, y: uy, midAngle: mid, isCouple: true,
         name1: unit.heads[0].name.split(' ')[0],
         name2: unit.heads[1].name.split(' ')[0],
-        rel1: unit.heads[0].relationship_label,
-        rel2: unit.heads[1].relationship_label,
+        rel1: labelFn(unit.heads[0].relationship_label),
+        rel2: labelFn(unit.heads[1].relationship_label),
         colorIndex: unit.colorIndex,
         isUser: false,
         memberIds: unit.heads.map(h => h.id),
@@ -258,7 +285,7 @@ function computePillLayout(
         id: unit.id,
         x: ux, y: uy, midAngle: mid, isCouple: false,
         name1: unit.heads[0].name.split(' ')[0],
-        rel1: unit.heads[0].relationship_label,
+        rel1: labelFn(unit.heads[0].relationship_label),
         colorIndex: unit.colorIndex,
         isUser: false,
         memberIds: [unit.heads[0].id],
@@ -302,7 +329,7 @@ function computePillLayout(
           id: item.member.id,
           x: cx2, y: cy2, midAngle: imid, isCouple: false,
           name1: item.member.name.split(' ')[0],
-          rel1: item.member.relationship_label,
+          rel1: labelFn(item.member.relationship_label),
           colorIndex: unit.colorIndex, isUser: false,
           memberIds: [item.member.id],
         })
@@ -355,7 +382,9 @@ function pillText(ci: number): string { return ci < 0 ? '#ffffff' : '#111827' }
 function pillSub(ci: number): string { return ci < 0 ? 'rgba(255,255,255,0.6)' : '#6b7280' }
 
 function PillNode({ pill, onTap }: { pill: Pill; onTap: (ids: string[]) => void }) {
-  const deg = (pill.midAngle * 180) / Math.PI + 90
+  const rawDeg = (pill.midAngle * 180) / Math.PI + 90
+  const norm = ((rawDeg % 360) + 360) % 360
+  const deg = norm > 90 && norm < 270 ? rawDeg + 180 : rawDeg
 
   if (pill.isCouple) {
     // Tangentially-oriented couple pill: rotated so width follows ring curve
@@ -530,6 +559,7 @@ export default function FamilyTreeClient({ members, userId, userName }: {
   const [parentId, setParentId] = useState<string | null>(null)
   const [parentName, setParentName] = useState('You')
   const [showStartPicker, setShowStartPicker] = useState(false)
+  const [showIndian, setShowIndian] = useState(false)
   const [chain, setChain] = useState<string[]>([])
   const [pickingStep, setPickingStep] = useState(false)
   const [form, setForm] = useState({ ...EMPTY_FORM })
@@ -550,7 +580,7 @@ export default function FamilyTreeClient({ members, userId, userName }: {
   const ringWidth = (cx - INNER_PAD - 14) / Math.max(totalRings, 1)
 
   const { pills, edges } = familyUnits.length > 0
-    ? computePillLayout(familyUnits, genMap, cx, cy, INNER_PAD, ringWidth, topGen, userName)
+    ? computePillLayout(familyUnits, genMap, cx, cy, INNER_PAD, ringWidth, topGen, userName, showIndian ? toIndianLabel : (s => s))
     : { pills: [], edges: [] }
 
   function setField(f: string, v: string) { setForm(prev => ({ ...prev, [f]: v })) }
@@ -603,6 +633,16 @@ export default function FamilyTreeClient({ members, userId, userName }: {
 
   return (
     <div className="flex flex-col items-center">
+
+      {/* Indian name toggle */}
+      <div className="w-full max-w-[500px] flex justify-end pr-2 mb-1">
+        <button
+          onClick={() => setShowIndian(s => !s)}
+          className={`text-[11px] px-2.5 py-1 rounded-full border transition-colors ${showIndian ? 'bg-amber-50 border-amber-200 text-amber-700 font-medium' : 'border-gray-200 text-gray-400 hover:border-gray-400'}`}
+        >
+          {showIndian ? '🇮🇳 Hindi' : 'Hindi names'}
+        </button>
+      </div>
 
       {/* Tree SVG — scales to fit screen */}
       <svg
