@@ -4,7 +4,7 @@ import { useState, useTransition } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
 import { Plus, Trash2, ChevronDown, ChevronRight, X, ArrowRight } from 'lucide-react'
-import { INDIAN_RELATIONSHIPS, RELATIONSHIP_CATEGORIES } from '@/lib/data/relationships'
+import { INDIAN_RELATIONSHIPS } from '@/lib/data/relationships'
 
 interface Member {
   id: string
@@ -23,7 +23,8 @@ interface Member {
   parent_member_id: string | null
 }
 
-// Generation step per single relationship word
+// ── Generation steps ──────────────────────────────────────────────────────────
+
 const GEN_STEP: Record<string, number> = {
   'Father': 1, 'Mother': 1,
   'Grandfather': 2, 'Grandmother': 2,
@@ -44,14 +45,11 @@ const GEN_STEP: Record<string, number> = {
   'Bhatija': -1, 'Bhatiji': -1, 'Bhanja': -1, 'Bhanji': -1,
 }
 
-// Correctly handle chain labels like "Father's Brother" or "Mother's Brother's Son"
 function getGenStep(rel: string): number {
-  // Hindi label: "Chacha — Father's younger brother" → use first word only
   if (rel.includes(' — ')) {
     const word = rel.split(' — ')[0].trim().split(' ')[0]
     return GEN_STEP[word] ?? 0
   }
-  // Chain label: "Father's Brother's Son" → sum each step
   if (rel.includes("'s ")) {
     return rel.split("'s ").reduce((sum, step) => sum + (GEN_STEP[step.trim()] ?? 0), 0)
   }
@@ -76,12 +74,35 @@ function computeGenerations(members: Member[]): Map<string, number> {
   return memo
 }
 
-// For a chain label, infer who the parent member is in the tree
-// e.g. "Father's Brother" → find the member labeled "Father"
+// ── Tree parent inference ─────────────────────────────────────────────────────
+// "Father" at gen+1 → tree parent is a gen+2 member whose chain base = "Father"
+// "Father's Brother" at gen+1 → same base "Father" → same tree parent (Dada)
+// "Father's Father" at gen+2 → tree parent is gen+3 member (usually null)
+
+function getTreeParentId(
+  m: Member,
+  allMembers: Member[],
+  genMap: Map<string, number>,
+): string | null {
+  if (m.parent_member_id) return m.parent_member_id
+  const myGen = genMap.get(m.id) ?? 0
+  const base = m.relationship_label.split("'s ")[0]
+  for (const other of allMembers) {
+    if (other.id === m.id) continue
+    const otherGen = genMap.get(other.id) ?? 0
+    if (otherGen !== myGen + 1) continue
+    const otherParts = other.relationship_label.split("'s ")
+    // other's chain must start with same base and have more steps (it's a higher ancestor)
+    if (otherParts[0] === base && otherParts.length > 1) return other.id
+  }
+  return null
+}
+
+// For ProfileModal: show which tree-level member this person connects through
 function findImpliedParent(m: Member, allMembers: Member[]): Member | null {
   if (m.parent_member_id) return allMembers.find(x => x.id === m.parent_member_id) ?? null
   const label = m.relationship_label
-  if (!label.includes("'s ")) return null // single step — parent is user (null)
+  if (!label.includes("'s ")) return null
   const parts = label.split("'s ")
   const parentLabel = parts.slice(0, -1).join("'s ")
   return allMembers.find(x =>
@@ -90,11 +111,15 @@ function findImpliedParent(m: Member, allMembers: Member[]): Member | null {
   ) ?? null
 }
 
+// ── Spouse pairing ────────────────────────────────────────────────────────────
+
 const SPOUSE_MAP: Record<string, string> = {
   'Father': 'Mother', 'Mother': 'Father',
   'Husband': 'Wife', 'Wife': 'Husband',
   'Grandfather': 'Grandmother', 'Grandmother': 'Grandfather',
-  'Nana': 'Nani', 'Nani': 'Nana', 'Dada': 'Dadi', 'Dadi': 'Dada',
+  'Nana': 'Nani', 'Nani': 'Nana',
+  'Dada': 'Dadi', 'Dadi': 'Dada',
+  'Pardada': 'Pardadi', 'Pardadi': 'Pardada',
 }
 
 function firstWord(rel: string) { return rel.split(/[\s'—]/)[0].trim() }
@@ -103,13 +128,32 @@ function isSpousePair(a: Member, b: Member): boolean {
   return SPOUSE_MAP[ar] === br || SPOUSE_MAP[br] === ar
 }
 
-// A family unit: a couple or single person, plus their children (recursive)
-interface FamilyUnit {
-  heads: Member[]
-  children: FamilyUnit[]  // each child who themselves have children
-  leafChildren: Member[]  // children with no further sub-units
-  isUserParentUnit: boolean
+function isUserParentHead(h: Member): boolean {
+  return ['Father', 'Mother', 'Papa', 'Maa', 'Pita', 'Mata'].includes(firstWord(h.relationship_label))
 }
+
+// ── Family unit structure ─────────────────────────────────────────────────────
+
+interface FamilyUnit {
+  id: string
+  heads: Member[]
+  children: FamilyUnit[]   // sub-units that themselves have children
+  leafChildren: Member[]   // members who are leaf nodes
+  isUserParentUnit: boolean
+  colorIndex: number
+}
+
+// Subtle pastel backgrounds for nuclear family clusters
+const CLUSTER_COLORS = [
+  'bg-rose-50 border-rose-200',
+  'bg-amber-50 border-amber-200',
+  'bg-sky-50 border-sky-200',
+  'bg-emerald-50 border-emerald-200',
+  'bg-violet-50 border-violet-200',
+  'bg-orange-50 border-orange-200',
+  'bg-teal-50 border-teal-200',
+  'bg-pink-50 border-pink-200',
+]
 
 function buildFamilyUnits(
   members: Member[],
@@ -117,110 +161,167 @@ function buildFamilyUnits(
 ): FamilyUnit[] {
   if (members.length === 0) return []
 
-  const maxGen = Math.max(...[...genMap.values()])
-
-  // Only process null-parent members as "top-level" heads
-  // (members with parent_member_id set will be found as children)
-  const nullParentByGen = new Map<number, Member[]>()
+  // Effective tree parent for each member
+  const treeParentId = new Map<string, string | null>()
   for (const m of members) {
-    if (m.parent_member_id !== null) continue
+    treeParentId.set(m.id, getTreeParentId(m, members, genMap))
+  }
+
+  // Top-level members: no tree parent (they float at their generation)
+  const topLevel = members.filter(m => treeParentId.get(m.id) === null)
+  const byGen = new Map<number, Member[]>()
+  for (const m of topLevel) {
     const g = genMap.get(m.id) ?? 0
-    if (!nullParentByGen.has(g)) nullParentByGen.set(g, [])
-    nullParentByGen.get(g)!.push(m)
+    if (!byGen.has(g)) byGen.set(g, [])
+    byGen.get(g)!.push(m)
   }
 
-  // Start at highest gen of null-parent members
-  const topGen = maxGen > 0 ? Math.max(...[...nullParentByGen.keys()].filter(g => g > 0)) : 0
+  const allGens = [...byGen.keys()]
+  if (allGens.length === 0) return []
+  const topGen = Math.max(...allGens)
 
-  function getChildrenOf(heads: Member[]): Member[] {
+  // Global set to prevent a member appearing in multiple units
+  const used = new Set<string>()
+
+  function getChildMembers(heads: Member[]): Member[] {
+    const headIds = new Set(heads.map(h => h.id))
     return members.filter(m => {
-      if (heads.some(h => h.id === m.parent_member_id)) return true
-      const implied = findImpliedParent(m, members)
-      return implied ? heads.some(h => h.id === implied.id) : false
+      if (used.has(m.id)) return false
+      const tp = treeParentId.get(m.id)
+      return tp != null && headIds.has(tp)
     })
   }
 
-  function isUserParentUnit(heads: Member[]): boolean {
-    return heads.some(h => {
-      const r = firstWord(h.relationship_label)
-      return r === 'Father' || r === 'Mother' || r === 'Papa' || r === 'Maa' || r === 'Pita' || r === 'Mata'
-    })
-  }
+  function buildUnit(head: Member, partnerArg: Member | null, colorIdx: number): FamilyUnit {
+    used.add(head.id)
 
-  function buildUnit(head: Member, partner: Member | null): FamilyUnit {
+    // Find spouse if not provided (can be anywhere in the member list, same gen)
+    let partner = partnerArg
+    if (!partner) {
+      const myGen = genMap.get(head.id) ?? 0
+      partner = members.find(m =>
+        !used.has(m.id) &&
+        isSpousePair(head, m) &&
+        (genMap.get(m.id) ?? 0) === myGen
+      ) ?? null
+      if (partner) used.add(partner.id)
+    }
+
     const heads = partner ? [head, partner] : [head]
-    const rawChildren = getChildrenOf(heads)
+    const isParentUnit = heads.some(isUserParentHead)
 
-    // Pair up children who are couples
-    const used = new Set<string>()
+    // Explicit/inferred children via tree parent
+    let rawChildren = getChildMembers(heads)
+
+    // For user's parent unit: also pull in gen-0 orphans (siblings like Sister, Brother)
+    if (isParentUnit) {
+      const gen0Orphans = members.filter(m =>
+        !used.has(m.id) &&
+        treeParentId.get(m.id) === null &&
+        (genMap.get(m.id) ?? 0) === 0
+      )
+      const existingIds = new Set(rawChildren.map(c => c.id))
+      rawChildren = [...rawChildren, ...gen0Orphans.filter(m => !existingIds.has(m.id))]
+    }
+
     const childUnits: FamilyUnit[] = []
     const leafChildren: Member[] = []
+    let subColor = colorIdx + 1
 
-    for (let i = 0; i < rawChildren.length; i++) {
-      if (used.has(rawChildren[i].id)) continue
-      let partner2: Member | null = null
-      for (let j = i + 1; j < rawChildren.length; j++) {
-        if (!used.has(rawChildren[j].id) && isSpousePair(rawChildren[i], rawChildren[j])) {
-          partner2 = rawChildren[j]; used.add(rawChildren[j].id); break
-        }
-      }
-      used.add(rawChildren[i].id)
-      // Check if this child has further children
-      const grandchildren = getChildrenOf(partner2 ? [rawChildren[i], partner2] : [rawChildren[i]])
-      if (grandchildren.length > 0) {
-        childUnits.push(buildUnit(rawChildren[i], partner2))
+    for (const child of rawChildren) {
+      if (used.has(child.id)) continue
+      // Find spouse for child
+      const childMyGen = genMap.get(child.id) ?? 0
+      const childSpouse = rawChildren.find(m =>
+        !used.has(m.id) && m.id !== child.id &&
+        isSpousePair(child, m) &&
+        (genMap.get(m.id) ?? 0) === childMyGen
+      ) ?? null
+
+      used.add(child.id)
+      if (childSpouse) used.add(childSpouse.id)
+
+      const childHeads = childSpouse ? [child, childSpouse] : [child]
+      const grandchildren = getChildMembers(childHeads)
+      const childIsParent = childHeads.some(isUserParentHead)
+
+      if (grandchildren.length > 0 || childIsParent) {
+        childUnits.push(buildUnit(child, childSpouse, subColor++))
       } else {
-        leafChildren.push(rawChildren[i])
-        if (partner2) leafChildren.push(partner2)
+        leafChildren.push(child)
+        if (childSpouse) leafChildren.push(childSpouse)
       }
     }
 
     return {
+      id: heads.map(h => h.id).join('-'),
       heads,
       children: childUnits,
       leafChildren,
-      isUserParentUnit: isUserParentUnit(heads),
+      isUserParentUnit: isParentUnit,
+      colorIndex: colorIdx % CLUSTER_COLORS.length,
     }
   }
 
-  // Build top-level units from the topGen null-parent members
-  const topMembers = nullParentByGen.get(topGen) ?? []
-  const used = new Set<string>()
+  const topMembers = topGen > 0 ? (byGen.get(topGen) ?? []) : (byGen.get(0) ?? [])
   const topUnits: FamilyUnit[] = []
+  let colorIdx = 0
 
-  // Also include gen 0 null-parent members if no ancestors exist
-  if (topGen <= 0) {
-    const gen0 = nullParentByGen.get(0) ?? []
-    for (let i = 0; i < gen0.length; i++) {
-      if (used.has(gen0[i].id)) continue
-      let partner: Member | null = null
-      for (let j = i + 1; j < gen0.length; j++) {
-        if (!used.has(gen0[j].id) && isSpousePair(gen0[i], gen0[j])) {
-          partner = gen0[j]; used.add(gen0[j].id); break
-        }
-      }
-      used.add(gen0[i].id)
-      topUnits.push(buildUnit(gen0[i], partner))
-    }
-    return topUnits
-  }
-
-  for (let i = 0; i < topMembers.length; i++) {
-    if (used.has(topMembers[i].id)) continue
-    let partner: Member | null = null
-    for (let j = i + 1; j < topMembers.length; j++) {
-      if (!used.has(topMembers[j].id) && isSpousePair(topMembers[i], topMembers[j])) {
-        partner = topMembers[j]; used.add(topMembers[j].id); break
-      }
-    }
-    used.add(topMembers[i].id)
-    topUnits.push(buildUnit(topMembers[i], partner))
+  for (const m of topMembers) {
+    if (used.has(m.id)) continue
+    const spouse = topMembers.find(x => !used.has(x.id) && x.id !== m.id && isSpousePair(m, x)) ?? null
+    if (spouse) used.add(spouse.id)
+    used.add(m.id)
+    topUnits.push(buildUnit(m, spouse, colorIdx++))
   }
 
   return topUnits
 }
 
-// ── Profile modal ──────────────────────────────────────────────────────────
+// ── Visual components ─────────────────────────────────────────────────────────
+
+function MemberCard({ member, onTap }: { member: Member; onTap: (m: Member) => void }) {
+  const verified = !!member.user_id
+  return (
+    <button
+      onClick={() => onTap(member)}
+      className={`bg-white rounded-xl px-3 py-2.5 text-center shadow-sm transition-all active:scale-95 select-none
+        ${verified
+          ? 'ring-2 ring-red-300 hover:ring-red-400'
+          : 'ring-1 ring-gray-200 hover:ring-gray-400 hover:shadow-md'
+        }`}
+      style={{ minWidth: 108, maxWidth: 132 }}
+    >
+      <p className="text-sm font-semibold text-gray-900 truncate">{member.name}</p>
+      <p className="text-[11px] text-gray-400 truncate mt-0.5 leading-tight">{member.relationship_label}</p>
+      {member.location_city && <p className="text-[10px] text-gray-300 truncate">{member.location_city}</p>}
+      {verified && <span className="inline-flex items-center gap-0.5 mt-1 text-[10px] text-red-500 font-medium">🩸 verified</span>}
+    </button>
+  )
+}
+
+function YouCard({ name }: { name: string }) {
+  return (
+    <div
+      className="bg-gray-900 text-white rounded-xl px-3 py-2.5 text-center shadow-md ring-2 ring-gray-700"
+      style={{ minWidth: 108 }}
+    >
+      <p className="text-sm font-semibold truncate">{name}</p>
+      <p className="text-[11px] text-gray-400 mt-0.5">You</p>
+    </div>
+  )
+}
+
+// ── Profile modal ─────────────────────────────────────────────────────────────
+
+function Row({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex gap-3">
+      <span className="text-xs text-gray-400 w-20 shrink-0 pt-0.5">{label}</span>
+      <span className="text-xs text-gray-700 flex-1">{value}</span>
+    </div>
+  )
+}
 
 function ProfileModal({ member, allMembers, userName, onClose, onAdd, onDelete }: {
   member: Member; allMembers: Member[]; userName: string;
@@ -256,7 +357,11 @@ function ProfileModal({ member, allMembers, userName, onClose, onAdd, onDelete }
           {inferred.length > 0 && (
             <div className="bg-gray-50 rounded-xl p-3 mb-4">
               <p className="text-xs font-semibold text-gray-500 mb-2">Also in tree</p>
-              {inferred.map((r, i) => <p key={i} className="text-xs text-gray-600"><span className="text-gray-400">{r.label}:</span> <span className="font-medium">{r.name}</span></p>)}
+              {inferred.map((r, i) => (
+                <p key={i} className="text-xs text-gray-600">
+                  <span className="text-gray-400">{r.label}:</span> <span className="font-medium">{r.name}</span>
+                </p>
+              ))}
             </div>
           )}
           <div className="flex flex-col gap-2.5">
@@ -269,7 +374,10 @@ function ProfileModal({ member, allMembers, userName, onClose, onAdd, onDelete }
             {member.notes && <Row label="Notes" value={member.notes} />}
           </div>
           <div className="flex gap-2 mt-5">
-            <button onClick={() => { onAdd(member.id, member.name); onClose() }} className="flex-1 flex items-center justify-center gap-1.5 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-600 hover:border-gray-400 transition-colors">
+            <button
+              onClick={() => { onAdd(member.id, member.name); onClose() }}
+              className="flex-1 flex items-center justify-center gap-1.5 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-600 hover:border-gray-400 transition-colors"
+            >
               <Plus size={14} /> Add their relative
             </button>
             {member.user_id ? (
@@ -278,7 +386,10 @@ function ProfileModal({ member, allMembers, userName, onClose, onAdd, onDelete }
                 <span className="text-[9px] text-gray-300 mt-0.5">verified</span>
               </div>
             ) : (
-              <button onClick={() => { onDelete(member.id); onClose() }} className="flex items-center justify-center px-4 py-2.5 border border-red-100 rounded-xl text-sm text-red-400 hover:bg-red-50 transition-colors">
+              <button
+                onClick={() => { onDelete(member.id); onClose() }}
+                className="flex items-center justify-center px-4 py-2.5 border border-red-100 rounded-xl text-sm text-red-400 hover:bg-red-50 transition-colors"
+              >
                 <Trash2 size={14} />
               </button>
             )}
@@ -289,133 +400,148 @@ function ProfileModal({ member, allMembers, userName, onClose, onAdd, onDelete }
   )
 }
 
-function Row({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex gap-3">
-      <span className="text-xs text-gray-400 w-20 shrink-0 pt-0.5">{label}</span>
-      <span className="text-xs text-gray-700 flex-1">{value}</span>
-    </div>
-  )
-}
+// ── Tree renderer (clean, no duplicate drop rendering) ────────────────────────
 
-function MemberCard({ member, onTap }: { member: Member; onTap: (m: Member) => void }) {
-  const verified = !!member.user_id
-  return (
-    <div onClick={() => onTap(member)}
-      className={`border rounded-xl bg-white px-3 py-2.5 text-center cursor-pointer active:bg-gray-50 transition-colors select-none ${verified ? 'border-red-200 hover:border-red-400' : 'border-gray-200 hover:border-gray-400'}`}
-      style={{ minWidth: 112, maxWidth: 136 }}>
-      <p className="text-sm font-semibold text-gray-900 truncate">{member.name}</p>
-      <p className="text-xs text-gray-400 truncate mt-0.5">{member.relationship_label}</p>
-      {member.location_city && <p className="text-xs text-gray-300 truncate">{member.location_city}</p>}
-      {verified && <span className="inline-flex items-center gap-0.5 mt-1 text-[10px] text-red-600 font-medium">🩸 verified</span>}
-    </div>
-  )
-}
-
-function HeadsRow({ heads, onTap }: { heads: Member[]; onTap: (m: Member) => void }) {
-  return (
-    <div className="flex items-center">
-      {heads.map((h, i) => (
-        <span key={h.id} className="flex items-center">
-          {i > 0 && <div style={{ width: 20, height: 1, background: '#d1d5db' }} />}
-          <MemberCard member={h} onTap={onTap} />
-        </span>
-      ))}
-    </div>
-  )
-}
-
-// Renders a family unit recursively
-function FamilyUnitView({
-  unit, userName, onTap, isTopLevel, index, total,
+function TreeUnit({
+  unit,
+  userName,
+  onTap,
+  index,
+  total,
+  isRoot,
 }: {
   unit: FamilyUnit
   userName: string
   onTap: (m: Member) => void
-  isTopLevel?: boolean
-  index?: number
-  total?: number
+  index: number
+  total: number
+  isRoot: boolean
 }) {
-  const isFirst = (index ?? 0) === 0
-  const isLast = (index ?? 0) === (total ?? 1) - 1
-  const isOnly = (total ?? 1) === 1
+  const isFirst = index === 0
+  const isLast = index === total - 1
+  const isOnly = total === 1
 
-  const hasChildren = unit.children.length > 0 || unit.leafChildren.length > 0 || unit.isUserParentUnit
+  const hasChildren =
+    unit.leafChildren.length > 0 ||
+    unit.children.length > 0 ||
+    unit.isUserParentUnit
+
+  const childCount =
+    unit.leafChildren.length +
+    unit.children.length +
+    (unit.isUserParentUnit ? 1 : 0)
+
+  const clusterColor = CLUSTER_COLORS[unit.colorIndex] ?? CLUSTER_COLORS[0]
 
   return (
     <div className="flex flex-col items-center">
-      {/* Sibling connector from parent row (if not top level) */}
-      {!isTopLevel && (
-        <div className="relative w-full flex justify-center" style={{ height: 28 }}>
+      {/* Incoming connector from parent's horizontal bracket */}
+      {!isRoot && (
+        <div className="relative flex justify-center" style={{ width: '100%', height: 28 }}>
           <div style={{ position: 'absolute', top: 0, left: 0, right: '50%', height: 1, background: isFirst || isOnly ? 'transparent' : '#d1d5db' }} />
           <div style={{ position: 'absolute', top: 0, left: '50%', right: 0, height: 1, background: isLast || isOnly ? 'transparent' : '#d1d5db' }} />
           <div style={{ position: 'absolute', top: 0, bottom: 0, left: '50%', marginLeft: -0.5, width: 1, background: '#d1d5db' }} />
         </div>
       )}
 
-      {/* Heads (couple or single) */}
-      <HeadsRow heads={unit.heads} onTap={onTap} />
+      {/* Nuclear family cluster card */}
+      <div className={`rounded-2xl border px-4 pt-4 pb-3 shadow-sm ${clusterColor}`}>
 
-      {hasChildren && (
-        <>
-          <div style={{ width: 1, height: 28, background: '#d1d5db' }} />
-          {/* Children row */}
-          <div className="flex items-start">
-            {/* User node (if this is user's parents' unit) */}
-            {unit.isUserParentUnit && (
-              <div className="flex flex-col items-center px-3">
-                <div className="relative w-full flex justify-center" style={{ height: 28 }}>
-                  {/* first child = no left line, unless there are siblings to the left */}
-                  <div style={{ position: 'absolute', top: 0, left: 0, right: '50%', height: 1, background: 'transparent' }} />
-                  <div style={{ position: 'absolute', top: 0, left: '50%', right: 0, height: 1, background: (unit.leafChildren.length > 0 || unit.children.length > 0) ? '#d1d5db' : 'transparent' }} />
-                  <div style={{ position: 'absolute', top: 0, bottom: 0, left: '50%', marginLeft: -0.5, width: 1, background: '#d1d5db' }} />
+        {/* Couple or single head */}
+        <div className="flex items-center justify-center">
+          {unit.heads.map((h, i) => (
+            <span key={h.id} className="flex items-center">
+              {i > 0 && (
+                <div className="flex items-center mx-1.5">
+                  <div style={{ width: 12, height: 1, background: '#9ca3af' }} />
+                  <div style={{ width: 5, height: 5, borderRadius: '50%', background: '#9ca3af' }} />
+                  <div style={{ width: 12, height: 1, background: '#9ca3af' }} />
                 </div>
-                <div className="border-2 border-gray-900 rounded-xl bg-gray-900 text-white px-3 py-2.5 text-center" style={{ minWidth: 112 }}>
-                  <p className="text-sm font-semibold truncate">{userName}</p>
-                  <p className="text-xs text-gray-400 mt-0.5">You</p>
-                </div>
-              </div>
-            )}
+              )}
+              <MemberCard member={h} onTap={onTap} />
+            </span>
+          ))}
+        </div>
 
-            {/* Leaf children (members with no further sub-units) */}
-            {unit.leafChildren.map((child, i) => {
-              const totalSiblings = unit.leafChildren.length + unit.children.length + (unit.isUserParentUnit ? 1 : 0)
-              const offset = unit.isUserParentUnit ? 1 : 0
-              return (
-                <div key={child.id} className="flex flex-col items-center px-3">
-                  <div className="relative w-full flex justify-center" style={{ height: 28 }}>
-                    <div style={{ position: 'absolute', top: 0, left: 0, right: '50%', height: 1, background: (offset + i === 0) ? 'transparent' : '#d1d5db' }} />
-                    <div style={{ position: 'absolute', top: 0, left: '50%', right: 0, height: 1, background: (offset + i === totalSiblings - 1) ? 'transparent' : '#d1d5db' }} />
-                    <div style={{ position: 'absolute', top: 0, bottom: 0, left: '50%', marginLeft: -0.5, width: 1, background: '#d1d5db' }} />
-                  </div>
-                  <MemberCard member={child} onTap={onTap} />
-                </div>
-              )
-            })}
+        {hasChildren && (
+          <>
+            <div className="flex justify-center mt-3 mb-0">
+              <div style={{ width: 1, height: 20, background: '#d1d5db' }} />
+            </div>
 
-            {/* Child units (members who have their own children) */}
-            {unit.children.map((child, i) => {
-              const totalSiblings = unit.leafChildren.length + unit.children.length + (unit.isUserParentUnit ? 1 : 0)
-              const offset = (unit.isUserParentUnit ? 1 : 0) + unit.leafChildren.length
-              return (
-                <FamilyUnitView
-                  key={child.heads.map(h => h.id).join('-')}
-                  unit={child}
-                  userName={userName}
-                  onTap={onTap}
-                  index={offset + i}
-                  total={totalSiblings}
-                />
-              )
-            })}
-          </div>
-        </>
-      )}
+            {/* Children row */}
+            <div className="flex items-start justify-center">
+
+              {/* You (always first if user parent unit) */}
+              {unit.isUserParentUnit && (() => {
+                const idx = 0
+                return (
+                  <ChildDrop key="__you__" index={idx} total={childCount}>
+                    <YouCard name={userName} />
+                  </ChildDrop>
+                )
+              })()}
+
+              {/* Leaf children */}
+              {unit.leafChildren.map((child, i) => {
+                const idx = (unit.isUserParentUnit ? 1 : 0) + i
+                return (
+                  <ChildDrop key={child.id} index={idx} total={childCount}>
+                    <MemberCard member={child} onTap={onTap} />
+                  </ChildDrop>
+                )
+              })}
+
+              {/* Sub-units */}
+              {unit.children.map((child, i) => {
+                const idx = (unit.isUserParentUnit ? 1 : 0) + unit.leafChildren.length + i
+                return (
+                  <ChildDrop key={child.id} index={idx} total={childCount}>
+                    <TreeUnit
+                      unit={child}
+                      userName={userName}
+                      onTap={onTap}
+                      index={0}
+                      total={1}
+                      isRoot
+                    />
+                  </ChildDrop>
+                )
+              })}
+            </div>
+          </>
+        )}
+      </div>
     </div>
   )
 }
 
-// Chain step options
+function ChildDrop({
+  children,
+  index,
+  total,
+}: {
+  children: React.ReactNode
+  index: number
+  total: number
+}) {
+  const isFirst = index === 0
+  const isLast = index === total - 1
+  const isOnly = total === 1
+  return (
+    <div className="flex flex-col items-center px-2">
+      <div className="relative flex justify-center" style={{ width: '100%', height: 24 }}>
+        <div style={{ position: 'absolute', top: 0, left: 0, right: '50%', height: 1, background: isFirst || isOnly ? 'transparent' : '#d1d5db' }} />
+        <div style={{ position: 'absolute', top: 0, left: '50%', right: 0, height: 1, background: isLast || isOnly ? 'transparent' : '#d1d5db' }} />
+        <div style={{ position: 'absolute', top: 0, bottom: 0, left: '50%', marginLeft: -0.5, width: 1, background: '#d1d5db' }} />
+      </div>
+      {children}
+    </div>
+  )
+}
+
+// ── Chain builder ─────────────────────────────────────────────────────────────
+
 const CHAIN_STEPS = [
   { label: 'Parents', steps: ['Father', 'Mother'] },
   { label: 'Siblings', steps: ['Brother', 'Sister'] },
@@ -441,7 +567,17 @@ const EMPTY_FORM = {
   company: '', education: '', notes: '',
 }
 
-export default function FamilyTreeClient({ members, userId, userName }: { members: Member[]; userId: string; userName: string }) {
+// ── Main component ────────────────────────────────────────────────────────────
+
+export default function FamilyTreeClient({
+  members,
+  userId,
+  userName,
+}: {
+  members: Member[]
+  userId: string
+  userName: string
+}) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
   const [addError, setAddError] = useState<string | null>(null)
@@ -480,16 +616,23 @@ export default function FamilyTreeClient({ members, userId, userName }: { member
     const supabase = createClient()
     startTransition(async () => {
       const { error } = await supabase.from('family_tree_members').insert({
-        tree_owner_id: userId, name: form.name,
-        email: form.email || null, phone: form.phone || null,
+        tree_owner_id: userId,
+        name: form.name,
+        email: form.email || null,
+        phone: form.phone || null,
         date_of_birth: form.date_of_birth || null,
-        location_city: form.location_city || null, location_country: form.location_country || null,
-        profession: form.profession || null, company: form.company || null,
-        education: form.education || null, notes: form.notes || null,
-        relationship_label: chainLabel, parent_member_id: parentId,
+        location_city: form.location_city || null,
+        location_country: form.location_country || null,
+        profession: form.profession || null,
+        company: form.company || null,
+        education: form.education || null,
+        notes: form.notes || null,
+        relationship_label: chainLabel,
+        parent_member_id: parentId,
       })
       if (error) { setAddError(error.message); return }
-      setShowModal(false); router.refresh()
+      setShowModal(false)
+      router.refresh()
     })
   }
 
@@ -501,136 +644,135 @@ export default function FamilyTreeClient({ members, userId, userName }: { member
     })
   }
 
+  // ── Render ──────────────────────────────────────────────────────────────────
+
   return (
     <div>
-      <div className="overflow-x-auto pb-8">
-        <div className="flex flex-col items-center" style={{ minWidth: 'max-content' }}>
+      <div className="overflow-x-auto pb-10 pt-4">
+        <div className="flex flex-col items-center px-4" style={{ minWidth: 'max-content' }}>
 
           {members.length === 0 ? (
-            <>
-              <div className="border-2 border-gray-900 rounded-xl bg-gray-900 text-white px-4 py-2.5 text-center" style={{ minWidth: 140 }}>
-                <p className="text-sm font-semibold">{userName}</p>
-                <p className="text-xs text-gray-400 mt-0.5">You</p>
-              </div>
+            /* Empty state */
+            <div className="flex flex-col items-center">
+              <YouCard name={userName} />
               <div style={{ width: 1, height: 28, background: '#d1d5db' }} />
-              <button onClick={() => openAdd(null, userName)} className="border border-dashed border-gray-300 rounded-xl px-4 py-3 text-xs text-gray-400 hover:border-gray-500 hover:text-gray-600 transition-colors flex items-center gap-1.5">
+              <button
+                onClick={() => openAdd(null, userName)}
+                className="border border-dashed border-gray-300 rounded-xl px-5 py-3 text-xs text-gray-400 hover:border-gray-500 hover:text-gray-600 transition-colors flex items-center gap-1.5"
+              >
                 <Plus size={13} /> Add first relative
               </button>
-            </>
+            </div>
           ) : familyUnits.length > 0 ? (
-            <>
-              {/* If all units are user-parent units with no ancestors, show user at top */}
-              {familyUnits.every(u => u.isUserParentUnit) && !familyUnits.some(u => u.heads.some(h => (genMap.get(h.id) ?? 0) > 1)) ? (
-                // No grandparents — show top level row as gen+1 with user below
-                <div className="flex flex-col items-center">
-                  {/* Gen+1 row: all top-level heads side by side */}
-                  <div className="flex items-start justify-center">
-                    {familyUnits.map((unit, i) => (
-                      <div key={unit.heads.map(h => h.id).join('-')} className="flex flex-col items-center px-4">
-                        <HeadsRow heads={unit.heads} onTap={setShowProfile} />
-                      </div>
-                    ))}
-                  </div>
-                  <div style={{ width: 1, height: 28, background: '#d1d5db' }} />
-                  {/* Gen 0 row: user + siblings + cousins */}
-                  <div className="flex items-start justify-center">
-                    {/* User node */}
-                    <div className="flex flex-col items-center px-3">
-                      <div className="border-2 border-gray-900 rounded-xl bg-gray-900 text-white px-3 py-2.5 text-center" style={{ minWidth: 112 }}>
-                        <p className="text-sm font-semibold truncate">{userName}</p>
-                        <p className="text-xs text-gray-400 mt-0.5">You</p>
-                      </div>
-                    </div>
-                    {/* Other gen-0 members */}
-                    {members.filter(m => (genMap.get(m.id) ?? 0) === 0).map(m => (
-                      <div key={m.id} className="flex flex-col items-center px-3">
-                        <MemberCard member={m} onTap={setShowProfile} />
-                        {/* This member's children */}
-                        {members.filter(c => c.parent_member_id === m.id).length > 0 && (
-                          <>
-                            <div style={{ width: 1, height: 20, background: '#d1d5db' }} />
-                            <div className="flex items-start">
-                              {members.filter(c => c.parent_member_id === m.id).map(c => (
-                                <div key={c.id} className="px-2"><MemberCard member={c} onTap={setShowProfile} /></div>
-                              ))}
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : (
-                // Has grandparents or multi-level — render full recursive units
-                <div className="flex items-start justify-center">
-                  {familyUnits.map((unit, i) => (
-                    <FamilyUnitView
-                      key={unit.heads.map(h => h.id).join('-')}
-                      unit={unit} userName={userName} onTap={setShowProfile}
-                      isTopLevel index={i} total={familyUnits.length}
-                    />
-                  ))}
-                </div>
-              )}
-
-              <div className="mt-8">
-                <button onClick={() => openAdd(null, userName)} className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-700 border border-gray-200 rounded-lg px-3 py-1.5 transition-colors">
-                  <Plus size={12} /> Add relative of {userName}
-                </button>
-              </div>
-            </>
+            /* Tree */
+            <div className="flex items-start justify-center gap-6">
+              {familyUnits.map((unit, i) => (
+                <TreeUnit
+                  key={unit.id}
+                  unit={unit}
+                  userName={userName}
+                  onTap={setShowProfile}
+                  index={i}
+                  total={familyUnits.length}
+                  isRoot
+                />
+              ))}
+            </div>
           ) : (
-            // Fallback: just show user
-            <div className="border-2 border-gray-900 rounded-xl bg-gray-900 text-white px-4 py-2.5 text-center" style={{ minWidth: 140 }}>
-              <p className="text-sm font-semibold">{userName}</p>
-              <p className="text-xs text-gray-400 mt-0.5">You</p>
+            /* Fallback: no units built (e.g. only gen0 orphans) */
+            <div className="flex flex-col items-center">
+              <YouCard name={userName} />
+              <div style={{ width: 1, height: 24, background: '#d1d5db' }} />
+              <div className="flex items-start gap-4">
+                {members.filter(m => (genMap.get(m.id) ?? 0) === 0).map(m => (
+                  <MemberCard key={m.id} member={m} onTap={setShowProfile} />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Add button */}
+          {members.length > 0 && (
+            <div className="mt-10">
+              <button
+                onClick={() => openAdd(null, userName)}
+                className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-700 border border-gray-200 rounded-lg px-3 py-1.5 transition-colors"
+              >
+                <Plus size={12} /> Add relative of {userName}
+              </button>
             </div>
           )}
         </div>
       </div>
 
-      {members.length > 0 && <p className="text-center text-xs text-gray-300 -mt-4 mb-4">Tap a person to view their profile</p>}
+      {members.length > 0 && (
+        <p className="text-center text-xs text-gray-300 mb-4">Tap a person to view or add their relatives</p>
+      )}
 
+      {/* Profile modal */}
       {showProfile && (
-        <ProfileModal member={showProfile} allMembers={members} userName={userName}
+        <ProfileModal
+          member={showProfile}
+          allMembers={members}
+          userName={userName}
           onClose={() => setShowProfile(null)}
           onAdd={(id, name) => { setShowProfile(null); openAdd(id, name) }}
           onDelete={(id) => { setShowProfile(null); handleDelete(id) }}
         />
       )}
 
-      {/* Add modal */}
+      {/* Add relative modal */}
       {showModal && (
         <div className="fixed inset-0 bg-black/30 flex items-end sm:items-center justify-center z-50">
           <div className="bg-white rounded-t-2xl sm:rounded-2xl w-full max-w-sm max-h-[92vh] overflow-y-auto">
             <div className="p-5">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="font-semibold">Add relative</h2>
-                <button onClick={() => setShowModal(false)} className="text-gray-300 hover:text-gray-600"><X size={18} /></button>
+                <button onClick={() => setShowModal(false)} className="text-gray-300 hover:text-gray-600">
+                  <X size={18} />
+                </button>
               </div>
+
               <form onSubmit={handleAdd} className="flex flex-col gap-4">
-                <input placeholder="Their name *" required value={form.name} onChange={e => setField('name', e.target.value)}
-                  className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-gray-400" />
+                <input
+                  placeholder="Their name *"
+                  required
+                  value={form.name}
+                  onChange={e => setField('name', e.target.value)}
+                  className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-gray-400"
+                />
 
                 {/* Relationship chain */}
                 <div>
                   <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Relationship</p>
+
+                  {/* Starting from */}
                   <div className="mb-3">
                     <p className="text-xs text-gray-400 mb-1">Starting from</p>
-                    <button type="button" onClick={() => setShowStartPicker(s => !s)}
-                      className="w-full flex items-center justify-between border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-700 hover:border-gray-400">
-                      <span>{parentName}</span><ChevronDown size={14} className="text-gray-400" />
+                    <button
+                      type="button"
+                      onClick={() => setShowStartPicker(s => !s)}
+                      className="w-full flex items-center justify-between border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-700 hover:border-gray-400"
+                    >
+                      <span>{parentName}</span>
+                      <ChevronDown size={14} className="text-gray-400" />
                     </button>
                     {showStartPicker && (
                       <div className="border border-gray-200 rounded-lg mt-1 overflow-hidden max-h-40 overflow-y-auto">
-                        <button type="button" onClick={() => { setParentId(null); setParentName(userName); setShowStartPicker(false) }}
-                          className={`w-full text-left px-3 py-2 text-sm hover:bg-gray-50 ${parentId === null ? 'font-medium' : ''}`}>
+                        <button
+                          type="button"
+                          onClick={() => { setParentId(null); setParentName(userName); setShowStartPicker(false) }}
+                          className={`w-full text-left px-3 py-2 text-sm hover:bg-gray-50 ${parentId === null ? 'font-medium' : ''}`}
+                        >
                           {userName} (you)
                         </button>
                         {members.map(m => (
-                          <button key={m.id} type="button"
+                          <button
+                            key={m.id}
+                            type="button"
                             onClick={() => { setParentId(m.id); setParentName(m.name); setShowStartPicker(false); setChain([]) }}
-                            className={`w-full text-left px-3 py-2 text-sm hover:bg-gray-50 border-t border-gray-50 ${parentId === m.id ? 'font-medium' : ''}`}>
+                            className={`w-full text-left px-3 py-2 text-sm hover:bg-gray-50 border-t border-gray-50 ${parentId === m.id ? 'font-medium' : ''}`}
+                          >
                             {m.name} <span className="text-xs text-gray-400 ml-1">{m.relationship_label}</span>
                           </button>
                         ))}
@@ -638,22 +780,35 @@ export default function FamilyTreeClient({ members, userId, userName }: { member
                     )}
                   </div>
 
-                  {/* Chain */}
+                  {/* Chain display */}
                   <p className="text-xs text-gray-400 mb-2">{parentName}'s → build the chain</p>
                   <div className="flex items-center flex-wrap gap-1 mb-2 min-h-[32px]">
-                    {chain.length === 0 && !pickingStep && <span className="text-xs text-gray-300 italic">Pick a relationship below</span>}
+                    {chain.length === 0 && !pickingStep && (
+                      <span className="text-xs text-gray-300 italic">Pick a relationship below</span>
+                    )}
                     {chain.map((step, i) => (
                       <span key={i} className="flex items-center gap-1">
                         {i > 0 && <ArrowRight size={10} className="text-gray-300" />}
                         <span className="bg-gray-900 text-white text-xs px-2.5 py-1 rounded-full">{step}</span>
                       </span>
                     ))}
-                    {chain.length > 0 && <button type="button" onClick={() => setChain(c => c.slice(0, -1))} className="text-xs text-gray-400 hover:text-red-400 ml-1">✕</button>}
+                    {chain.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setChain(c => c.slice(0, -1))}
+                        className="text-xs text-gray-400 hover:text-red-400 ml-1"
+                      >
+                        ✕
+                      </button>
+                    )}
                   </div>
 
                   {resolved && (
                     <div className="bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 mb-2">
-                      <p className="text-xs text-amber-700"><span className="font-semibold">{resolved.hindi}</span><span className="text-amber-500 ml-1.5">— {resolved.definition}</span></p>
+                      <p className="text-xs text-amber-700">
+                        <span className="font-semibold">{resolved.hindi}</span>
+                        <span className="text-amber-500 ml-1.5">— {resolved.definition}</span>
+                      </p>
                     </div>
                   )}
 
@@ -661,15 +816,21 @@ export default function FamilyTreeClient({ members, userId, userName }: { member
                     <div className="border border-gray-200 rounded-xl p-3 flex flex-col gap-2">
                       <div className="flex items-center justify-between mb-1">
                         <p className="text-xs font-medium text-gray-600">Pick next step</p>
-                        <button type="button" onClick={() => setPickingStep(false)} className="text-gray-300 hover:text-gray-600"><X size={14} /></button>
+                        <button type="button" onClick={() => setPickingStep(false)} className="text-gray-300 hover:text-gray-600">
+                          <X size={14} />
+                        </button>
                       </div>
                       {CHAIN_STEPS.map(group => (
                         <div key={group.label}>
                           <p className="text-[10px] text-gray-400 uppercase tracking-wide mb-1">{group.label}</p>
                           <div className="flex flex-wrap gap-1">
                             {group.steps.map(step => (
-                              <button key={step} type="button" onClick={() => { setChain(c => [...c, step]); setPickingStep(false) }}
-                                className="px-3 py-1.5 rounded-full text-xs border border-gray-200 text-gray-600 hover:bg-gray-900 hover:text-white hover:border-gray-900 transition-colors">
+                              <button
+                                key={step}
+                                type="button"
+                                onClick={() => { setChain(c => [...c, step]); setPickingStep(false) }}
+                                className="px-3 py-1.5 rounded-full text-xs border border-gray-200 text-gray-600 hover:bg-gray-900 hover:text-white hover:border-gray-900 transition-colors"
+                              >
                                 {step}
                               </button>
                             ))}
@@ -678,9 +839,13 @@ export default function FamilyTreeClient({ members, userId, userName }: { member
                       ))}
                     </div>
                   ) : (
-                    <button type="button" onClick={() => setPickingStep(true)}
-                      className="flex items-center gap-1.5 text-xs border border-dashed border-gray-300 rounded-lg px-3 py-2 text-gray-500 hover:border-gray-500 w-full justify-center transition-colors">
-                      <Plus size={12} />{chain.length === 0 ? 'Pick first step' : 'Add another step'}
+                    <button
+                      type="button"
+                      onClick={() => setPickingStep(true)}
+                      className="flex items-center gap-1.5 text-xs border border-dashed border-gray-300 rounded-lg px-3 py-2 text-gray-500 hover:border-gray-500 w-full justify-center transition-colors"
+                    >
+                      <Plus size={12} />
+                      {chain.length === 0 ? 'Pick first step' : 'Add another step'}
                     </button>
                   )}
 
@@ -696,15 +861,35 @@ export default function FamilyTreeClient({ members, userId, userName }: { member
                 {/* Contact */}
                 <div className="flex flex-col gap-2">
                   <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Contact (optional)</p>
-                  <input placeholder="Email" type="email" value={form.email} onChange={e => setField('email', e.target.value)} className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-gray-400" />
-                  <input placeholder="Phone" value={form.phone} onChange={e => setField('phone', e.target.value)} className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-gray-400" />
+                  <input
+                    placeholder="Email"
+                    type="email"
+                    value={form.email}
+                    onChange={e => setField('email', e.target.value)}
+                    className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-gray-400"
+                  />
+                  <input
+                    placeholder="Phone"
+                    value={form.phone}
+                    onChange={e => setField('phone', e.target.value)}
+                    className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-gray-400"
+                  />
                   <div>
                     <label className="text-xs text-gray-400 mb-1 block">Date of birth</label>
-                    <input type="date" value={form.date_of_birth} onChange={e => setField('date_of_birth', e.target.value)} className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-gray-400" />
+                    <input
+                      type="date"
+                      value={form.date_of_birth}
+                      onChange={e => setField('date_of_birth', e.target.value)}
+                      className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-gray-400"
+                    />
                   </div>
                 </div>
 
-                <button type="button" onClick={() => setShowExtra(e => !e)} className="text-xs text-gray-400 hover:text-gray-700 text-left flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setShowExtra(e => !e)}
+                  className="text-xs text-gray-400 hover:text-gray-700 text-left flex items-center gap-1"
+                >
                   {showExtra ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                   {showExtra ? 'Hide' : 'Add'} extra details
                 </button>
@@ -712,21 +897,64 @@ export default function FamilyTreeClient({ members, userId, userName }: { member
                 {showExtra && (
                   <div className="flex flex-col gap-2 border-t border-gray-100 pt-3">
                     <div className="flex gap-2">
-                      <input placeholder="City" value={form.location_city} onChange={e => setField('location_city', e.target.value)} className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-gray-400 min-w-0" />
-                      <input placeholder="Country" value={form.location_country} onChange={e => setField('location_country', e.target.value)} className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-gray-400 min-w-0" />
+                      <input
+                        placeholder="City"
+                        value={form.location_city}
+                        onChange={e => setField('location_city', e.target.value)}
+                        className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-gray-400 min-w-0"
+                      />
+                      <input
+                        placeholder="Country"
+                        value={form.location_country}
+                        onChange={e => setField('location_country', e.target.value)}
+                        className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-gray-400 min-w-0"
+                      />
                     </div>
-                    <input placeholder="Profession" value={form.profession} onChange={e => setField('profession', e.target.value)} className="border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-gray-400" />
-                    <input placeholder="Company" value={form.company} onChange={e => setField('company', e.target.value)} className="border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-gray-400" />
-                    <input placeholder="Education / College" value={form.education} onChange={e => setField('education', e.target.value)} className="border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-gray-400" />
-                    <textarea placeholder="Notes" value={form.notes} onChange={e => setField('notes', e.target.value)} rows={2} className="border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-gray-400 resize-none" />
+                    <input
+                      placeholder="Profession"
+                      value={form.profession}
+                      onChange={e => setField('profession', e.target.value)}
+                      className="border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-gray-400"
+                    />
+                    <input
+                      placeholder="Company"
+                      value={form.company}
+                      onChange={e => setField('company', e.target.value)}
+                      className="border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-gray-400"
+                    />
+                    <input
+                      placeholder="Education / College"
+                      value={form.education}
+                      onChange={e => setField('education', e.target.value)}
+                      className="border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-gray-400"
+                    />
+                    <textarea
+                      placeholder="Notes"
+                      value={form.notes}
+                      onChange={e => setField('notes', e.target.value)}
+                      rows={2}
+                      className="border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-gray-400 resize-none"
+                    />
                   </div>
                 )}
 
-                {addError && <p className="text-xs text-red-500 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{addError}</p>}
+                {addError && (
+                  <p className="text-xs text-red-500 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{addError}</p>
+                )}
 
                 <div className="flex gap-2 pt-1">
-                  <button type="button" onClick={() => setShowModal(false)} className="flex-1 py-2.5 border border-gray-200 rounded-lg text-sm">Cancel</button>
-                  <button type="submit" disabled={!canSubmit || isPending} className="flex-1 py-2.5 bg-gray-900 text-white rounded-lg text-sm disabled:opacity-50">
+                  <button
+                    type="button"
+                    onClick={() => setShowModal(false)}
+                    className="flex-1 py-2.5 border border-gray-200 rounded-lg text-sm"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={!canSubmit || isPending}
+                    className="flex-1 py-2.5 bg-gray-900 text-white rounded-lg text-sm disabled:opacity-50"
+                  >
                     {isPending ? 'Adding...' : 'Add'}
                   </button>
                 </div>
