@@ -93,7 +93,18 @@ function findImpliedParent(m: Member, all: Member[]): Member | null {
 // ── Indian name lookup ────────────────────────────────────────────────────────
 
 const ENGLISH_TO_HINDI: Record<string, string> = {
-  // Generic fallbacks for chains without Elder/Younger distinction
+  // Generic single-word fallbacks (chain builder uses these exact strings)
+  'Brother': 'Bhai',
+  'Sister': 'Behen',
+  'Grandfather': 'Dada',
+  'Grandmother': 'Dadi',
+  'Grandson': 'Pota',
+  'Granddaughter': 'Poti',
+  'Uncle': 'Chacha',
+  'Aunt': 'Bua',
+  'Nephew': 'Bhatija',
+  'Niece': 'Bhatiji',
+  // Generic chain fallbacks without Elder/Younger distinction
   "Father's Brother": 'Chacha',
   "Father's Sister": 'Bua',
   "Mother's Brother": 'Mama',
@@ -292,10 +303,12 @@ function computePillLayout(
       })
     }
 
+    // Siblings (You + leaf children) get half the angular weight of child sub-units
+    // so they cluster tightly together rather than spreading across the full sector
     type CI = { isYou: boolean; member?: Member; unit?: FamilyUnit; leaves: number }
     const items: CI[] = [
-      ...(unit.isUserParentUnit ? [{ isYou: true, leaves: 1 }] : []),
-      ...unit.leafChildren.map(m => ({ isYou: false, member: m, leaves: 1 })),
+      ...(unit.isUserParentUnit ? [{ isYou: true, leaves: 0.5 }] : []),
+      ...unit.leafChildren.map(m => ({ isYou: false, member: m, leaves: 0.5 })),
       ...unit.children.map(c => ({ isYou: false, unit: c, leaves: leafCount(c) })),
     ]
     if (!items.length) return
