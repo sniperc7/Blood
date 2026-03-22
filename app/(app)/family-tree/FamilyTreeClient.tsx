@@ -72,9 +72,9 @@ function getTreeParentId(m: Member, all: Member[], genMap: Map<string, number>):
   if (m.parent_member_id) return m.parent_member_id
   const myGen = genMap.get(m.id) ?? 0
   const chainParts = m.relationship_label.split("'s ")
-  if (chainParts.length < 2) return null  // single-word label has no implied parent
   const base = chainParts[0]
-  // Priority 1: gen+1 member whose label starts with the same base (e.g. Dada for Father's Brother)
+  // Priority 1: gen+1 member whose label starts with the same base
+  // Works for single-word ("Father" → Dada) and chains ("Father's Brother" → Dada)
   for (const other of all) {
     if (other.id === m.id) continue
     const otherGen = genMap.get(other.id) ?? 0
@@ -82,13 +82,15 @@ function getTreeParentId(m: Member, all: Member[], genMap: Map<string, number>):
     const parts = other.relationship_label.split("'s ")
     if (parts[0] === base && parts.length > 1) return other.id
   }
-  // Priority 2: same-gen member whose label IS exactly the base
-  // (e.g. "Mother's Brother" → base "Mother" → link to the Mother member)
-  for (const other of all) {
-    if (other.id === m.id) continue
-    const otherGen = genMap.get(other.id) ?? 0
-    if (otherGen !== myGen) continue
-    if (other.relationship_label === base) return other.id
+  // Priority 2: same-gen member whose label IS exactly the base — only for chains
+  // (e.g. "Mother's Brother" → Mother when no Nana exists)
+  if (chainParts.length > 1) {
+    for (const other of all) {
+      if (other.id === m.id) continue
+      const otherGen = genMap.get(other.id) ?? 0
+      if (otherGen !== myGen) continue
+      if (other.relationship_label === base) return other.id
+    }
   }
   return null
 }
